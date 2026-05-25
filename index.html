@@ -728,17 +728,39 @@
 /* ===== Restore saved edits BEFORE slide nav captures the DOM ===== */
 (function(){
   var STORAGE_KEY = 'bba-saved-state-v2';
-
-  // Tag every trackable element with a stable id (idempotent walk in document order)
   var TRACKABLE = 'h1,h2,h3,h4,p,li,img,.eyebrow,.q,.text,.session-tag,.result-pill,.num,.myth-tag,.photo-caption,.meta,a.cta-btn,.cover-badge,.case-photo,.photo-block,.who-team-photo,.case .ph';
+
+  // Phase 1: rebuild .deck from saved deckSlides (if any) BEFORE tagging
+  var state = null;
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) state = JSON.parse(raw);
+  } catch(e) {}
+
+  if (state && state.deckSlides && state.deckSlides.length) {
+    var deck = document.querySelector('.deck');
+    if (deck) {
+      Array.prototype.slice.call(deck.querySelectorAll(':scope > .slide')).forEach(function(s){ s.remove(); });
+      state.deckSlides.forEach(function(html, i){
+        var temp = document.createElement('div');
+        temp.innerHTML = html;
+        var node = temp.firstElementChild;
+        if (node) {
+          if (i === 0) node.classList.add('active');
+          deck.appendChild(node);
+        }
+      });
+    }
+  }
+
+  // Phase 2: tag every trackable element with a stable id in document order
   document.querySelectorAll(TRACKABLE).forEach(function(el, i){
     el.dataset.edId = String(i + 1);
   });
 
+  // Phase 3: apply theme overrides + outside-deck per-element changes + legacy placed (no deckSlides)
   try {
-    var raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    var state = JSON.parse(raw);
+    if (!state) return;
 
     if (state.htmlStyle) document.documentElement.setAttribute('style', state.htmlStyle);
 
@@ -763,7 +785,8 @@
       if (ch.removed) el.remove();
     });
 
-    if (state.placed) {
+    // Legacy path: if no deckSlides (old format), apply .placed elements separately
+    if (!state.deckSlides && state.placed) {
       var slides = document.querySelectorAll('.slide');
       state.placed.forEach(function(p){
         if (!slides[p.slideIndex]) return;
@@ -958,6 +981,18 @@
     });
   });
 
+  // Canva-like: every editable text element gets a drag handle so it can be moved.
+  // Defer this until createDragHandle is defined below — we'll do it after the wiring section.
+  function attachTextDragHandle(el){
+    if (!el || el.querySelector(':scope > .ed-drag-handle')) return;
+    if (el.closest('.brandbar, .controls, .ed-panel')) return;
+    if (getComputedStyle(el).position === 'static') {
+      el.style.position = 'relative';
+    }
+    el.setAttribute('data-ed-movable', '1');
+    el.appendChild(createDragHandle(el));
+  }
+
   /* ---------- Image wiring (click = select + replace) ---------- */
   var selectedImg = null;
   function replaceImage(img){
@@ -1088,6 +1123,13 @@
       '<div class="ed-row"><label>Display</label><select data-fontvar="--display" data-fontcat="sans"></select></div>',
       '<div class="ed-row"><label>Serif</label><select data-fontvar="--serif" data-fontcat="serif"></select></div>',
       '<div class="ed-row"><label>Mono</label><select data-fontvar="--mono" data-fontcat="mono"></select></div>',
+    '</div>',
+    '<div class="ed-section"><h4>Pages</h4>',
+      '<div class="ed-row" style="gap:6px">',
+        '<button class="ed-btn" data-add-page style="flex:1;padding:10px;font-size:11px">+ Add new page</button>',
+        '<button class="ed-btn secondary" data-del-page style="flex:1;padding:10px;font-size:11px;color:#FCA5A5">Delete current page</button>',
+      '</div>',
+      '<p class="ed-hint" style="margin-top:10px">New pages append to the end of the deck. Delete removes whichever slide is currently visible.</p>',
     '</div>',
     '<div class="ed-section"><h4>Add to current slide</h4>',
       '<div class="ed-row" style="gap:6px">',
@@ -1717,6 +1759,13 @@
   }
   document.querySelectorAll('img').forEach(wireMovable);
 
+  // Attach drag handles to every editable text element so they can be moved Canva-style.
+  // Skip elements already inside .ed-placed (they have their own handle from creation).
+  document.querySelectorAll('[contenteditable="true"]').forEach(function(el){
+    if (el.classList.contains('ed-placed')) return; // placed text already wired
+    attachTextDragHandle(el);
+  });
+
   function placeAt(kind, slide, x, y){
     if (kind === 'img') {
       var input = document.createElement('input');
@@ -1840,9 +1889,34 @@
     setTimeout(function(){ t.remove(); }, 2600);
   }
 
+  function sanitizeSlideClone(clone){
+    clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
+    clone.querySelectorAll('[contenteditable]').forEach(function(n){
+      n.removeAttribute('contenteditable');
+      n.removeAttribute('spellcheck');
+    });
+    clone.querySelectorAll('[data-ed-id]').forEach(function(n){ n.removeAttribute('data-ed-id'); });
+    clone.querySelectorAll('[data-ed-wired]').forEach(function(n){ n.removeAttribute('data-ed-wired'); });
+    clone.querySelectorAll('[data-ed-movable]').forEach(function(n){ n.removeAttribute('data-ed-movable'); });
+    return clone;
+  }
+
   function buildState(){
+    // Save the full deck as a list of slide HTML strings. This naturally captures:
+    //  - every per-element edit (text, inline style, src, alt, href)
+    //  - free-placed (.ed-placed) elements inside slides
+    //  - newly added pages and any deletions
+    var deckSlides = [];
+    document.querySelectorAll('.deck > .slide').forEach(function(slide){
+      var clone = sanitizeSlideClone(slide.cloneNode(true));
+      clone.classList.remove('active');
+      deckSlides.push(clone.outerHTML);
+    });
+
+    // For elements OUTSIDE .deck (brandbar logo, session-tag), keep the per-id changes map.
     var changes = {};
     document.querySelectorAll('[data-ed-id]').forEach(function(el){
+      if (el.closest('.deck')) return; // deck handled by deckSlides
       var id = el.dataset.edId;
       var entry = {};
       var style = el.getAttribute('style');
@@ -1852,9 +1926,9 @@
         var alt = el.getAttribute('alt');
         if (alt !== null) entry.alt = alt;
       } else if (el.isContentEditable || el.hasAttribute('contenteditable')) {
-        var clone = el.cloneNode(true);
-        clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
-        entry.html = clone.innerHTML;
+        var c2 = el.cloneNode(true);
+        c2.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
+        entry.html = c2.innerHTML;
       }
       if (el.tagName === 'A' && el.hasAttribute('href')) {
         entry.href = el.getAttribute('href');
@@ -1862,26 +1936,13 @@
       if (Object.keys(entry).length) changes[id] = entry;
     });
 
-    var placed = [];
-    var allSlides = document.querySelectorAll('.slide');
-    document.querySelectorAll('.ed-placed').forEach(function(el){
-      var slide = el.closest('.slide');
-      if (!slide) return;
-      var idx = Array.prototype.indexOf.call(allSlides, slide);
-      var clone = el.cloneNode(true);
-      clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
-      clone.removeAttribute('contenteditable');
-      clone.removeAttribute('spellcheck');
-      placed.push({ slideIndex: idx, html: clone.outerHTML });
-    });
-
     var fonts = Object.keys(loadedFonts).filter(function(f){
       return f !== 'Inter' && f !== 'Instrument Serif' && f !== 'JetBrains Mono';
     });
 
     return {
+      deckSlides: deckSlides,
       changes: changes,
-      placed: placed,
       fonts: fonts,
       htmlStyle: document.documentElement.getAttribute('style') || '',
       savedAt: Date.now()
@@ -1906,6 +1967,57 @@
     if (!confirm('Discard saved edits and reload the page?')) return;
     localStorage.removeItem(STORAGE_KEY);
     location.reload();
+  });
+
+  /* ---------- Add / delete page ---------- */
+  panel.querySelector('[data-add-page]').addEventListener('click', function(){
+    try {
+      var deck = document.querySelector('.deck');
+      if (!deck) return;
+      var slide = document.createElement('section');
+      slide.className = 'slide';
+      slide.innerHTML = '<div class="narrow"><div class="eyebrow">New section</div><h2>New page heading</h2><p>Add your content here. Drag the corner handle to move text. Use the panel to insert headings, buttons, or images anywhere on the slide.</p></div>';
+      deck.appendChild(slide);
+      var state = buildState();
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch(err) {
+        showToast(err.name === 'QuotaExceededError' ? 'Storage full' : 'Save failed', 'err');
+        return;
+      }
+      showToast('Page added · reloading…', 'ok');
+      setTimeout(function(){
+        location.hash = 'slide=' + document.querySelectorAll('.deck > .slide').length;
+        location.reload();
+      }, 600);
+    } catch(e) {
+      console.error(e);
+      showToast('Add page failed: ' + (e.message || e), 'err');
+    }
+  });
+
+  panel.querySelector('[data-del-page]').addEventListener('click', function(){
+    var allSlides = document.querySelectorAll('.deck > .slide');
+    if (allSlides.length <= 1) {
+      showToast('Need at least one page', 'err');
+      return;
+    }
+    var active = document.querySelector('.slide.active');
+    if (!active) { showToast('No active slide', 'err'); return; }
+    if (!confirm('Delete the current page? This can\'t be undone.')) return;
+    var currentIdx = Array.prototype.indexOf.call(allSlides, active);
+    active.remove();
+    var state = buildState();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch(err) {
+      showToast(err.name === 'QuotaExceededError' ? 'Storage full' : 'Save failed', 'err');
+      return;
+    }
+    var newIdx = Math.max(1, Math.min(state.deckSlides.length, currentIdx)); // 1-based for hash
+    location.hash = 'slide=' + newIdx;
+    showToast('Page deleted · reloading…', 'ok');
+    setTimeout(function(){ location.reload(); }, 600);
   });
 
   /* ---------- PowerPoint (.pptx) export — captures each slide as a rendered image
