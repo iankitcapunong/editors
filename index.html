@@ -2212,20 +2212,150 @@
     } catch(e){}
   }
 
-  function captureRootToSlide(ps, root, slideRect){
-    // 1. Decorative background shapes go first so they sit behind everything else
-    if (root.matches && root.matches(CARD_SEL)) addCardShape(ps, root, slideRect);
-    root.querySelectorAll(CARD_SEL).forEach(function(el){
-      if (el.closest('.ed-panel, .controls')) return;
-      addCardShape(ps, el, slideRect);
-    });
+  // Buttons / pills keep their own text-box-with-fill rendering
+  var SPECIAL_TEXT_SEL = 'a.cta-btn, .result-pill';
 
-    // 2. Cover badge halo (radial pink behind the badge)
+  function buildRun(el){
+    var clone = el.cloneNode(true);
+    clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
+    var text = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    var style = getComputedStyle(el);
+    var fontSize = parseFloat(style.fontSize) || 16;
+    var fontWeight = parseInt(style.fontWeight) || 400;
+    var color = cssToHex(style.color, 'FFFFFF') || 'FFFFFF';
+    var uppercase = style.textTransform === 'uppercase';
+    return {
+      text: (uppercase ? text.toUpperCase() : text),
+      options: {
+        fontSize: pxToPt(fontSize),
+        color: color,
+        bold: fontWeight >= 600,
+        italic: style.fontStyle === 'italic',
+        fontFace: getFontName(style.fontFamily),
+        breakLine: true,
+        paraSpaceAfter: 6
+      }
+    };
+  }
+
+  // Walk text children of `container`, building rich-text runs.
+  // Skip elements already in `captured` and elements anywhere under `skipRoots`.
+  function collectRunsIn(container, captured, skipRoots){
+    var runs = [];
+    container.querySelectorAll(TEXT_SEL).forEach(function(el){
+      if (captured.has(el)) return;
+      if (el.closest('.ed-panel, .controls')) return;
+      if (el.closest('.ed-placed')) return;
+      if (el.matches && el.matches(SPECIAL_TEXT_SEL)) return; // rendered as its own pill/button box
+      // Skip if inside any of the skipRoots (e.g. a card we're rendering separately)
+      if (skipRoots) {
+        for (var k = 0; k < skipRoots.length; k++) {
+          if (skipRoots[k].contains(el)) return;
+        }
+      }
+      // Skip if a parent inside the same container is also a text selector
+      var anc = el.parentElement;
+      while (anc && anc !== container) {
+        if (anc.matches && anc.matches(TEXT_SEL) && !captured.has(anc)) return;
+        anc = anc.parentElement;
+      }
+      var run = buildRun(el);
+      if (run) { runs.push(run); captured.add(el); }
+    });
+    return runs;
+  }
+
+  // Union bounding rect of every visible text child in `container`
+  function textUnionRect(container, captured){
+    var b = null;
+    container.querySelectorAll(TEXT_SEL).forEach(function(el){
+      if (captured && captured.has(el)) return;
+      if (el.closest('.ed-panel, .controls')) return;
+      if (el.closest('.ed-placed')) return;
+      var rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      if (!b) b = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      else {
+        b.left = Math.min(b.left, rect.left);
+        b.top = Math.min(b.top, rect.top);
+        b.right = Math.max(b.right, rect.right);
+        b.bottom = Math.max(b.bottom, rect.bottom);
+      }
+    });
+    return b;
+  }
+
+  function addRichTextFrame(ps, runs, bounds, slideRect, padInches){
+    if (!runs.length || !bounds) return;
+    var pad = padInches || 0;
+    var x = pxToIn(bounds.left - slideRect.left) + pad;
+    var y = pxToIn(bounds.top - slideRect.top) + pad;
+    var w = pxToIn(bounds.right - bounds.left) - 2 * pad + 0.2;
+    var h = pxToIn(bounds.bottom - bounds.top) - 2 * pad + 0.6;
+    if (w <= 0.3 || h <= 0.2) return;
+    if (x > 13.333 || y > 7.5) return;
+    w = Math.min(w, 13.333 - x);
+    h = Math.min(h, 7.5 - y);
+    try {
+      ps.addText(runs, {
+        x: Math.max(0, x), y: Math.max(0, y), w: w, h: h,
+        valign: 'top', wrap: true, isTextBox: true, margin: 0,
+        paraSpaceAfter: 6
+      });
+    } catch(e){}
+  }
+
+  function addSpecialTextBox(ps, el, slideRect){
+    var run = buildRun(el);
+    if (!run) return;
+    var rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    var style = getComputedStyle(el);
+    var x = pxToIn(rect.left - slideRect.left);
+    var y = pxToIn(rect.top - slideRect.top);
+    var w = pxToIn(rect.width);
+    var h = pxToIn(rect.height);
+    if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+
+    var fill = colorToFill(style.backgroundColor);
+    if (!fill || !fill.color) {
+      var first = firstColorFromGradient(style.backgroundImage);
+      if (first) fill = colorToFill(first);
+    }
+    if (!fill) fill = { color: 'F323A1' };
+
+    var opts = {
+      x: x, y: y, w: w + 0.1, h: h + 0.1,
+      fontSize: run.options.fontSize,
+      color: run.options.color,
+      fontFace: run.options.fontFace,
+      bold: true,
+      align: 'center', valign: 'middle',
+      fill: fill,
+      isTextBox: true,
+      margin: 0
+    };
+    var sh = parseBoxShadow(style.boxShadow);
+    if (sh) opts.shadow = sh;
+    try { ps.addText(run.text, opts); } catch(e){}
+  }
+
+  function captureRootToSlide(ps, root, slideRect){
+    var captured = new Set();
+
+    // 1. Decorative background shapes (cards) so they sit behind everything else
+    if (root.matches && root.matches(CARD_SEL)) addCardShape(ps, root, slideRect);
+    var cards = Array.prototype.slice.call(root.querySelectorAll(CARD_SEL))
+      .filter(function(el){ return !el.closest('.ed-panel, .controls'); });
+    cards.forEach(function(el){ addCardShape(ps, el, slideRect); });
+
+    // 2. Cover badge halo
     var badge = root.querySelector ? root.querySelector('.cover-badge') : null;
     if (badge) addBadgeHalo(ps, badge, slideRect);
     if (root.matches && root.matches('.cover-badge')) addBadgeHalo(ps, root, slideRect);
 
-    // 3. Images (real <img> elements as editable image objects)
+    // 3. Images as editable picture objects
     root.querySelectorAll('img').forEach(function(img){
       if (img.closest('.ed-panel, .controls')) return;
       var rect = img.getBoundingClientRect();
@@ -2238,89 +2368,83 @@
       var data = imgToDataUrl(img);
       if (!data) return;
       try {
-        ps.addImage({
-          data: data,
-          x: Math.max(0, x), y: Math.max(0, y),
-          w: w, h: h
-        });
+        ps.addImage({ data: data, x: Math.max(0, x), y: Math.max(0, y), w: w, h: h });
       } catch(e){}
     });
 
-    // 4. Text on top
-    root.querySelectorAll(TEXT_SEL).forEach(function(el){
+    // 4. Free-positioned (.ed-placed) — one text frame each, since the user placed them
+    root.querySelectorAll('.ed-placed').forEach(function(el){
       if (el.closest('.ed-panel, .controls')) return;
-      var anc = el.parentElement;
-      while (anc && anc !== root) {
-        try { if (anc.matches && anc.matches(TEXT_SEL)) return; } catch(e){}
-        anc = anc.parentElement;
-      }
-      var clone = el.cloneNode(true);
-      clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
-      var text = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!text) return;
-
+      if (el.tagName === 'IMG' || (el.classList && el.classList.contains('ed-placed-img'))) return;
+      var run = buildRun(el);
+      if (!run) return;
       var rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       var style = getComputedStyle(el);
       var x = pxToIn(rect.left - slideRect.left);
       var y = pxToIn(rect.top - slideRect.top);
-      var w = pxToIn(rect.width);
-      var h = pxToIn(rect.height);
-      if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
-
-      var fontSize = parseFloat(style.fontSize) || 16;
-      var fontWeight = parseInt(style.fontWeight) || 400;
-      var color = cssToHex(style.color, 'FFFFFF') || 'FFFFFF';
-      var fontFace = getFontName(style.fontFamily);
-      var align = style.textAlign === 'center' ? 'center'
-                : style.textAlign === 'right'  ? 'right'
-                : style.textAlign === 'justify' ? 'justify'
-                : 'left';
-      var displayText = style.textTransform === 'uppercase' ? text.toUpperCase() : text;
-
-      var opts = {
-        x: x, y: y, w: Math.min(13.333 - x, w + 0.15), h: Math.min(7.5 - y, h + 0.25),
-        fontSize: pxToPt(fontSize),
-        color: color,
-        fontFace: fontFace,
-        bold: fontWeight >= 600,
-        italic: style.fontStyle === 'italic',
-        align: align,
-        valign: 'top',
-        margin: 0,
-        isTextBox: true,
-        wrap: true
-      };
-
-      // CTA button — extract pink fill from its gradient if needed
-      if (el.matches('a.cta-btn')) {
-        var btnFill = colorToFill(style.backgroundColor);
-        if (!btnFill || !btnFill.color) {
-          var first = firstColorFromGradient(style.backgroundImage);
-          if (first) btnFill = colorToFill(first);
-        }
-        opts.fill = btnFill || { color: 'F323A1' };
-        opts.bold = true;
-        opts.align = 'center';
-        opts.valign = 'middle';
-        var sh = parseBoxShadow(style.boxShadow);
-        if (sh) opts.shadow = sh;
-      }
-      // Result pill — pink fill, dark text, centered
-      if (el.matches('.result-pill')) {
-        var pillFill = colorToFill(style.backgroundColor);
-        if (!pillFill) {
-          var pfirst = firstColorFromGradient(style.backgroundImage);
-          if (pfirst) pillFill = colorToFill(pfirst);
-        }
-        opts.fill = pillFill || { color: 'F323A1' };
-        opts.bold = true;
-        opts.align = 'center';
-        opts.valign = 'middle';
-      }
-
-      try { ps.addText(displayText, opts); } catch(e){}
+      var w = pxToIn(rect.width) + 0.2;
+      var h = pxToIn(rect.height) + 0.2;
+      try {
+        ps.addText(run.text, {
+          x: x, y: y, w: Math.min(13.333 - x, w), h: Math.min(7.5 - y, h),
+          fontSize: run.options.fontSize,
+          color: run.options.color,
+          fontFace: run.options.fontFace,
+          bold: run.options.bold, italic: run.options.italic,
+          align: style.textAlign === 'center' ? 'center'
+               : style.textAlign === 'right'  ? 'right' : 'left',
+          valign: 'top', wrap: true, margin: 0, isTextBox: true
+        });
+      } catch(e){}
+      el.querySelectorAll('*').forEach(function(d){ captured.add(d); });
+      captured.add(el);
     });
+
+    // 5. Specials (CTA + pill): individual text boxes with the pink fill
+    root.querySelectorAll(SPECIAL_TEXT_SEL).forEach(function(el){
+      if (el.closest('.ed-panel, .controls')) return;
+      if (el.closest('.ed-placed')) return;
+      addSpecialTextBox(ps, el, slideRect);
+      captured.add(el);
+    });
+
+    // 6. One rich-text frame per card (so each card has tidy stacked text)
+    cards.forEach(function(card){
+      var runs = collectRunsIn(card, captured, null);
+      if (!runs.length) return;
+      var bounds = textUnionRect(card, null);
+      if (!bounds) bounds = card.getBoundingClientRect();
+      addRichTextFrame(ps, runs, bounds, slideRect, 0.05);
+    });
+
+    // 7. One rich-text frame for everything else — positioned at the *union* of
+    //    remaining text rects (avoids overlapping the badge image on the cover slide).
+    var mainContainer = (root.querySelector && root.querySelector('.narrow, .container, .wide')) || root;
+    var mainRuns = collectRunsIn(mainContainer, captured, cards);
+    if (mainRuns.length) {
+      // Compute union of just the remaining (non-captured) text rects
+      var nonCapBounds = null;
+      mainContainer.querySelectorAll(TEXT_SEL).forEach(function(el){
+        if (captured.has(el)) return;
+        if (el.closest('.ed-panel, .controls')) return;
+        if (el.closest('.ed-placed')) return;
+        if (el.matches && el.matches(SPECIAL_TEXT_SEL)) return;
+        var skipped = false;
+        for (var c2 = 0; c2 < cards.length; c2++) { if (cards[c2].contains(el)) { skipped = true; break; } }
+        if (skipped) return;
+        var r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        if (!nonCapBounds) nonCapBounds = { left:r.left, top:r.top, right:r.right, bottom:r.bottom };
+        else {
+          nonCapBounds.left = Math.min(nonCapBounds.left, r.left);
+          nonCapBounds.top = Math.min(nonCapBounds.top, r.top);
+          nonCapBounds.right = Math.max(nonCapBounds.right, r.right);
+          nonCapBounds.bottom = Math.max(nonCapBounds.bottom, r.bottom);
+        }
+      });
+      if (nonCapBounds) addRichTextFrame(ps, mainRuns, nonCapBounds, slideRect, 0);
+    }
   }
 
   async function exportPptx(){
@@ -2397,19 +2521,22 @@
 
   panel.querySelector('[data-export-pptx]').addEventListener('click', exportPptx);
 
-  /* Export to Canva = generate .pptx + open Canva so user can drop the file to import */
+  /* Export to Canva.
+     Note: Canva doesn't expose a public client-side endpoint that lets a static
+     HTML page push a design into a user's Canva account without OAuth + a
+     registered app. The practical path is to generate the editable .pptx and
+     drop it into Canva — Canva's Import file builder converts it into a
+     fully-editable Canva Presentation. We open the Canva upload entry point
+     first so the popup permission isn't lost during the render. */
   panel.querySelector('[data-export-canva]').addEventListener('click', async function(){
-    // Open Canva FIRST while we still have user-gesture permission for window.open.
-    // Use canva.com directly — once logged in, the user can drag the .pptx onto the
-    // homepage or click "Create a design" → "Import file".
     var canvaTab = null;
-    try { canvaTab = window.open('https://www.canva.com/', '_blank', 'noopener'); } catch(e){}
+    try { canvaTab = window.open('https://www.canva.com/folder/all-designs', '_blank', 'noopener'); } catch(e){}
+    if (!canvaTab) { try { canvaTab = window.open('https://www.canva.com/', '_blank'); } catch(e){} }
 
     await exportPptx();
 
-    // Slight delay so this toast lands after the export's success toast
     setTimeout(function(){
-      showToast('Drop the .pptx into the Canva tab to import', 'ok');
+      showToast('In Canva: Create a design → Import file (or drag the .pptx)', 'ok');
       try { if (canvaTab && !canvaTab.closed) canvaTab.focus(); } catch(e){}
     }, 1600);
   });
