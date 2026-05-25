@@ -176,7 +176,7 @@
   .cover-badge img { width: 100%; height: auto; display: block; }
   .cover-badge::before {
     content: ""; position: absolute; inset: -10%; z-index: -1; border-radius: 50%;
-    background: radial-gradient(circle, rgba(243,35,161,0.25), transparent 65%);
+    background: var(--badge-glow, radial-gradient(circle, rgba(243,35,161,0.25), transparent 65%));
   }
   @media (max-width: 900px) {
     .cover-grid { grid-template-columns: 1fr; gap: 32px; }
@@ -1384,8 +1384,14 @@
     var frame = getImgFrame();
     if (!frame) return;
     var a = imgGradA.value, b = imgGradB.value, ang = imgGradAngle.value;
-    if (ang && a && b) {
-      frame.style.backgroundImage = 'linear-gradient(' + ang + ', ' + a + ', ' + b + ')';
+    var grad = (ang && a && b) ? ('linear-gradient(' + ang + ', ' + a + ', ' + b + ')') : '';
+    // .cover-badge has a ::before halo controlled by --badge-glow.
+    // Set the var so the user's gradient replaces the default radial pink halo.
+    if (frame.classList.contains('cover-badge')) {
+      if (grad) frame.style.setProperty('--badge-glow', grad);
+      else frame.style.removeProperty('--badge-glow');
+    } else if (grad) {
+      frame.style.backgroundImage = grad;
     }
   }
   function applyImgBorder(){
@@ -1435,7 +1441,12 @@
     imgRadius.value = frame.style.borderRadius ? parseInt(frame.style.borderRadius, 10) : '';
     var bg = frame.style.backgroundColor || '';
     imgBg.value = bg ? toHex(bg) : '#000000';
+    // For .cover-badge, the visible gradient lives in --badge-glow (drives ::before)
     var bgImg = frame.style.backgroundImage || '';
+    if (frame.classList.contains('cover-badge')) {
+      var bg2 = frame.style.getPropertyValue('--badge-glow') || '';
+      if (bg2) bgImg = bg2;
+    }
     var gm = bgImg.match(/linear-gradient\((\-?\d+deg)\s*,\s*([^,]+),\s*([^\)]+)\)/);
     if (gm) {
       imgGradAngle.value = gm[1];
@@ -1470,11 +1481,19 @@
   });
   imgBg.addEventListener('input', function(){
     var frame = getImgFrame();
-    if (frame) frame.style.backgroundColor = imgBg.value;
+    if (!frame) return;
+    if (frame.classList.contains('cover-badge')) {
+      frame.style.setProperty('--badge-glow', imgBg.value);
+    } else {
+      frame.style.backgroundColor = imgBg.value;
+    }
   });
   imgBgClear.addEventListener('click', function(){
     var frame = getImgFrame();
     if (!frame) return;
+    if (frame.classList.contains('cover-badge')) {
+      frame.style.removeProperty('--badge-glow');
+    }
     frame.style.backgroundColor = '';
     frame.style.backgroundImage = '';
     frame.style.background = '';
@@ -1505,6 +1524,7 @@
     frame.style.backgroundImage = '';
     frame.style.border = '';
     frame.style.boxShadow = '';
+    frame.style.removeProperty('--badge-glow');
     selectedImg.style.filter = '';
     showImageControls(selectedImg);
   });
