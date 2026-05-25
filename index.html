@@ -2036,26 +2036,46 @@
       document.head.appendChild(s);
     });
   }
-  function loadHtml2Canvas(){
-    if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  function loadHtmlToImage(){
+    if (window.htmlToImage) return Promise.resolve(window.htmlToImage);
     return new Promise(function(resolve, reject){
       var s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+      // html-to-image uses SVG foreignObject — keeps gradients, custom fonts,
+      // drop-shadow filters, CSS variables, ::before pseudo-elements far more faithfully than html2canvas.
+      s.src = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js';
       s.setAttribute('data-editor', '1');
-      s.onload = function(){ resolve(window.html2canvas); };
-      s.onerror = function(){ reject(new Error('html2canvas failed to load')); };
+      s.onload = function(){ resolve(window.htmlToImage); };
+      s.onerror = function(){ reject(new Error('html-to-image failed to load')); };
       document.head.appendChild(s);
     });
+  }
+
+  function preloadAllImages(){
+    var imgs = document.querySelectorAll('img');
+    var promises = [];
+    imgs.forEach(function(img){
+      if (img.complete && img.naturalHeight !== 0) return;
+      promises.push(new Promise(function(resolve){
+        var done = function(){ resolve(); };
+        img.addEventListener('load', done, { once: true });
+        img.addEventListener('error', done, { once: true });
+        setTimeout(done, 6000);
+      }));
+    });
+    return Promise.all(promises);
   }
 
   async function exportPptx(){
     var origActive = document.querySelector('.slide.active');
     var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
     var panelWasOpen = document.body.classList.contains('ed-panel-open');
+    var origBodyCss = document.body.getAttribute('style') || '';
+    var origHtmlCss = document.documentElement.getAttribute('style') || '';
+    var origScrollY = window.scrollY;
     try {
       showToast('Loading export libraries…');
-      var libs = await Promise.all([loadHtml2Canvas(), loadPptxGenJS()]);
-      var h2c = libs[0];
+      var libs = await Promise.all([loadHtmlToImage(), loadPptxGenJS()]);
+      var h2i = libs[0];
       var Pptx = libs[1];
       var pres = new Pptx();
       pres.layout = 'LAYOUT_WIDE'; // 13.333 × 7.5 inches (16:9)
@@ -2066,43 +2086,55 @@
       // Close the panel and enter capture mode so editor chrome is excluded
       document.body.classList.remove('ed-panel-open');
       document.body.classList.add('ed-capturing');
-      // small delay so layout settles
-      await new Promise(function(r){ setTimeout(r, 80); });
 
-      function shouldIgnore(el){
-        if (!el || el.nodeType !== 1) return false;
+      // Force a real 1920×1080 layout — this is the most reliable way to make
+      // fixed-position items (brandbar) and full-bleed slides render correctly.
+      document.documentElement.style.setProperty('width', '1920px', 'important');
+      document.documentElement.style.setProperty('height', '1080px', 'important');
+      document.body.style.setProperty('width', '1920px', 'important');
+      document.body.style.setProperty('height', '1080px', 'important');
+      document.body.style.setProperty('overflow', 'hidden', 'important');
+      window.scrollTo(0, 0);
+
+      // Wait for layout reflow + fonts + images
+      await new Promise(function(r){ setTimeout(r, 200); });
+      if (document.fonts && document.fonts.ready) {
+        try { await document.fonts.ready; } catch(e){}
+      }
+      await preloadAllImages();
+
+      function filterNode(node){
+        if (!node || node.nodeType !== 1) return true;
         try {
-          if (el.matches('.ed-panel, .ed-toggle, .ed-toast, .ed-place-hint, .controls, .skip-link, [data-editor="1"]')) return true;
-          if (el.classList.contains('ed-drag-handle')) return true;
+          if (node.matches && node.matches('.ed-panel, .ed-toggle, .ed-toast, .ed-place-hint, .controls, .skip-link, [data-editor="1"]')) return false;
+          if (node.classList && node.classList.contains('ed-drag-handle')) return false;
         } catch(e){}
-        return false;
+        return true;
       }
 
       for (var i = 0; i < slides.length; i++) {
         showToast('Rendering slide ' + (i + 1) + ' / ' + slides.length);
         slides.forEach(function(s){ s.classList.remove('active'); });
         slides[i].classList.add('active');
-        // Make sure top of slide is in view, fonts are settled, layout stable
         slides[i].scrollTop = 0;
-        if (document.fonts && document.fonts.ready) {
-          try { await document.fonts.ready; } catch(e){}
-        }
         await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
 
-        var canvas = await h2c(document.body, {
-          backgroundColor: '#000000',
+        var dataUrl = await h2i.toJpeg(document.body, {
           width: 1920,
           height: 1080,
-          windowWidth: 1920,
-          windowHeight: 1080,
-          scale: 1,
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-          imageTimeout: 15000,
-          ignoreElements: shouldIgnore
+          backgroundColor: '#000000',
+          quality: 0.92,
+          pixelRatio: 1,
+          cacheBust: false,
+          filter: filterNode,
+          style: {
+            width: '1920px',
+            height: '1080px',
+            margin: '0',
+            padding: '0'
+          }
         });
-        var dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
         var ps = pres.addSlide();
         ps.background = { color: '000000' };
         ps.addImage({ data: dataUrl, x: 0, y: 0, w: 13.333, h: 7.5 });
@@ -2116,12 +2148,15 @@
       console.error(e);
       showToast('PPTX export failed: ' + (e.message || e), 'err');
     } finally {
-      // Restore original visible slide and editor state
+      // Restore everything
       slides.forEach(function(s){ s.classList.remove('active'); });
       if (origActive) origActive.classList.add('active');
       else if (slides[0]) slides[0].classList.add('active');
       document.body.classList.remove('ed-capturing');
       if (panelWasOpen) document.body.classList.add('ed-panel-open');
+      document.body.setAttribute('style', origBodyCss);
+      document.documentElement.setAttribute('style', origHtmlCss);
+      window.scrollTo(0, origScrollY);
     }
   }
 
