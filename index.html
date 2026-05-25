@@ -1499,12 +1499,22 @@
     frame.style.background = '';
     imgGradAngle.value = '';
   });
-  imgGradA.addEventListener('input', applyImgGradient);
-  imgGradB.addEventListener('input', applyImgGradient);
+  function maybeDefaultAngle(){
+    // If user picks a gradient color while angle is "off", auto-enable at 135deg
+    if (!imgGradAngle.value) imgGradAngle.value = '135deg';
+  }
+  imgGradA.addEventListener('input', function(){ maybeDefaultAngle(); applyImgGradient(); });
+  imgGradB.addEventListener('input', function(){ maybeDefaultAngle(); applyImgGradient(); });
   imgGradAngle.addEventListener('change', function(){
-    if (!selectedImg) return;
+    var frame = getImgFrame();
+    if (!frame) return;
     if (!imgGradAngle.value) {
-      selectedImg.style.backgroundImage = '';
+      // Off: remove the gradient
+      if (frame.classList.contains('cover-badge')) {
+        frame.style.removeProperty('--badge-glow');
+      } else {
+        frame.style.backgroundImage = '';
+      }
     } else {
       applyImgGradient();
     }
