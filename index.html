@@ -2130,13 +2130,10 @@
   /* Export to Canva = generate .pptx + open Canva so user can drop the file to import */
   panel.querySelector('[data-export-canva]').addEventListener('click', async function(){
     // Open Canva FIRST while we still have user-gesture permission for window.open.
-    // Use the design-create URL so the upload flow is one step closer.
+    // Use canva.com directly — once logged in, the user can drag the .pptx onto the
+    // homepage or click "Create a design" → "Import file".
     var canvaTab = null;
-    try { canvaTab = window.open('https://www.canva.com/design?create_in_canva=true', '_blank', 'noopener'); } catch(e){}
-    if (!canvaTab) {
-      // Popup was blocked — try a plain link as a fallback
-      try { canvaTab = window.open('https://www.canva.com/', '_blank'); } catch(e){}
-    }
+    try { canvaTab = window.open('https://www.canva.com/', '_blank', 'noopener'); } catch(e){}
 
     await exportPptx();
 
