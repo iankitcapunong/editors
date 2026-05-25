@@ -2092,9 +2092,140 @@
   }
 
   var TEXT_SEL = 'h1, h2, h3, h4, p, li, .eyebrow, .q, .text, .session-tag, .result-pill, .num, .myth-tag, .photo-caption, .meta > span, a.cta-btn';
+  // Decorative container shapes that should round-trip to PowerPoint
+  var CARD_SEL = '.pain-card, .myth-card, .pillar-card, .who-card, .case, .promise-list > li, .photo-block, .case-photo';
+
+  function colorToFill(cssColor){
+    var col = cssToHex(cssColor);
+    if (!col) return null;
+    var opMatch = String(cssColor).match(/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/);
+    var opacity = opMatch ? parseFloat(opMatch[1]) : 1;
+    var transparency = Math.round((1 - opacity) * 100);
+    return transparency > 0 ? { color: col, transparency: transparency } : { color: col };
+  }
+  function firstColorFromGradient(bgImage){
+    if (!bgImage) return null;
+    var m = bgImage.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*[\d.]+)?\s*\)|#[0-9a-fA-F]{6}/);
+    return m ? m[0] : null;
+  }
+  function parseBoxShadow(boxShadow){
+    if (!boxShadow || boxShadow === 'none') return null;
+    // Find the color first (rgba or hex)
+    var colMatch = boxShadow.match(/rgba?\([^)]+\)|#[0-9a-fA-F]{3,8}/);
+    var color = colMatch ? cssToHex(colMatch[0], '000000') : '000000';
+    var opMatch = colMatch ? colMatch[0].match(/rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)/) : null;
+    var opacity = opMatch ? parseFloat(opMatch[1]) : 0.5;
+    // Find numeric values: dx dy blur (spread optional)
+    var rest = boxShadow.replace(colMatch ? colMatch[0] : '', '').trim();
+    var nums = rest.match(/-?\d+(?:\.\d+)?/g);
+    if (!nums || nums.length < 3) return null;
+    var dx = parseFloat(nums[0]);
+    var dy = parseFloat(nums[1]);
+    var blur = parseFloat(nums[2]);
+    return {
+      type: 'outer',
+      color: color || '000000',
+      blur: Math.min(Math.max(blur, 0), 100),
+      offset: Math.min(Math.sqrt(dx*dx + dy*dy), 30),
+      angle: dx === 0 && dy === 0 ? 0 : Math.round((Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360),
+      opacity: Math.round(opacity * 100)
+    };
+  }
+
+  function addCardShape(ps, el, slideRect){
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 5 || rect.height < 5) return;
+    var x = pxToIn(rect.left - slideRect.left);
+    var y = pxToIn(rect.top - slideRect.top);
+    var w = pxToIn(rect.width);
+    var h = pxToIn(rect.height);
+    if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+
+    var style = getComputedStyle(el);
+    var opts = { x: Math.max(0, x), y: Math.max(0, y), w: w, h: h };
+
+    // Fill — from solid background-color, or first color of a gradient
+    var bgColor = style.backgroundColor;
+    var bgImage = style.backgroundImage;
+    var fill = null;
+    if (bgImage && bgImage !== 'none' && bgImage.indexOf('gradient') !== -1) {
+      var first = firstColorFromGradient(bgImage);
+      if (first) fill = colorToFill(first);
+    }
+    if (!fill && bgColor && bgColor !== 'transparent' && bgColor !== 'rgba(0, 0, 0, 0)') {
+      fill = colorToFill(bgColor);
+    }
+    if (fill) opts.fill = fill;
+
+    // Border
+    var bw = parseFloat(style.borderTopWidth) || 0;
+    if (bw > 0) {
+      var bc = cssToHex(style.borderTopColor);
+      if (bc) opts.line = { color: bc, width: Math.max(0.5, bw) };
+    }
+
+    // Shadow
+    var sh = parseBoxShadow(style.boxShadow);
+    if (sh) opts.shadow = sh;
+
+    if (!opts.fill && !opts.line) return; // nothing to draw
+
+    // Border radius — switch to rounded rect
+    var br = parseFloat(style.borderTopLeftRadius) || 0;
+    var shape = 'rect';
+    if (br > 0) {
+      shape = 'roundRect';
+      opts.rectRadius = Math.min((br / Math.min(rect.width, rect.height)) * 0.5, 0.5);
+    }
+
+    try { ps.addShape(shape, opts); } catch(e){}
+  }
+
+  function addBadgeHalo(ps, badge, slideRect){
+    var rect = badge.getBoundingClientRect();
+    if (rect.width < 5) return;
+    var x = pxToIn(rect.left - slideRect.left);
+    var y = pxToIn(rect.top - slideRect.top);
+    var w = pxToIn(rect.width);
+    var h = pxToIn(rect.height);
+    var ext = 0.12;
+
+    // Pull the glow color from the --badge-glow CSS variable when set, else fall back to pink
+    var glow = badge.style.getPropertyValue('--badge-glow') || '';
+    var col = 'F323A1';
+    var hexMatch = glow.match(/#([0-9a-fA-F]{6})/);
+    var rgbMatch = glow.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (hexMatch) col = hexMatch[1].toUpperCase();
+    else if (rgbMatch) {
+      col = [rgbMatch[1], rgbMatch[2], rgbMatch[3]].map(function(n){
+        var h2 = parseInt(n).toString(16);
+        return h2.length < 2 ? '0'+h2 : h2;
+      }).join('').toUpperCase();
+    }
+
+    try {
+      ps.addShape('ellipse', {
+        x: x - w * ext, y: y - h * ext,
+        w: w * (1 + 2 * ext), h: h * (1 + 2 * ext),
+        fill: { color: col, transparency: 78 }
+      });
+    } catch(e){}
+  }
 
   function captureRootToSlide(ps, root, slideRect){
-    // Images first so text lands on top
+    // 1. Decorative background shapes go first so they sit behind everything else
+    if (root.matches && root.matches(CARD_SEL)) addCardShape(ps, root, slideRect);
+    root.querySelectorAll(CARD_SEL).forEach(function(el){
+      if (el.closest('.ed-panel, .controls')) return;
+      addCardShape(ps, el, slideRect);
+    });
+
+    // 2. Cover badge halo (radial pink behind the badge)
+    var badge = root.querySelector ? root.querySelector('.cover-badge') : null;
+    if (badge) addBadgeHalo(ps, badge, slideRect);
+    if (root.matches && root.matches('.cover-badge')) addBadgeHalo(ps, root, slideRect);
+
+    // 3. Images (real <img> elements as editable image objects)
     root.querySelectorAll('img').forEach(function(img){
       if (img.closest('.ed-panel, .controls')) return;
       var rect = img.getBoundingClientRect();
@@ -2115,17 +2246,14 @@
       } catch(e){}
     });
 
-    // Text elements
+    // 4. Text on top
     root.querySelectorAll(TEXT_SEL).forEach(function(el){
       if (el.closest('.ed-panel, .controls')) return;
-      // Skip if any ancestor inside the same root also matches a text selector
-      // (e.g. <span class="accent"> inside an <h1> — the h1 captures the full text)
       var anc = el.parentElement;
       while (anc && anc !== root) {
         try { if (anc.matches && anc.matches(TEXT_SEL)) return; } catch(e){}
         anc = anc.parentElement;
       }
-      // Get text, excluding editor-only children (drag handles, etc.)
       var clone = el.cloneNode(true);
       clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
       var text = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
@@ -2164,18 +2292,28 @@
         wrap: true
       };
 
-      // CTA button: keep the pink fill & rounded corners
+      // CTA button — extract pink fill from its gradient if needed
       if (el.matches('a.cta-btn')) {
-        opts.fill = { color: cssToHex(style.backgroundColor, 'F323A1') || 'F323A1' };
-        opts.color = color;
+        var btnFill = colorToFill(style.backgroundColor);
+        if (!btnFill || !btnFill.color) {
+          var first = firstColorFromGradient(style.backgroundImage);
+          if (first) btnFill = colorToFill(first);
+        }
+        opts.fill = btnFill || { color: 'F323A1' };
         opts.bold = true;
         opts.align = 'center';
         opts.valign = 'middle';
+        var sh = parseBoxShadow(style.boxShadow);
+        if (sh) opts.shadow = sh;
       }
-      // Result pill: pink fill, dark text
+      // Result pill — pink fill, dark text, centered
       if (el.matches('.result-pill')) {
-        opts.fill = { color: 'F323A1' };
-        opts.color = '000000';
+        var pillFill = colorToFill(style.backgroundColor);
+        if (!pillFill) {
+          var pfirst = firstColorFromGradient(style.backgroundImage);
+          if (pfirst) pillFill = colorToFill(pfirst);
+        }
+        opts.fill = pillFill || { color: 'F323A1' };
         opts.bold = true;
         opts.align = 'center';
         opts.valign = 'middle';
