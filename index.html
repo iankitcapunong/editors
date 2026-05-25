@@ -729,25 +729,6 @@
 (function(){
   var STORAGE_KEY = 'bba-saved-state-v2';
 
-  // Insert imported PowerPoint slides FIRST (before tagging), so they get IDs in the same pass
-  try {
-    var rawPre = localStorage.getItem(STORAGE_KEY);
-    if (rawPre) {
-      var preState = JSON.parse(rawPre);
-      if (preState.importedSlides && preState.importedSlides.length) {
-        var deck = document.querySelector('.deck');
-        if (deck) {
-          preState.importedSlides.forEach(function(html){
-            var temp = document.createElement('div');
-            temp.innerHTML = html;
-            var node = temp.firstElementChild;
-            if (node) deck.appendChild(node);
-          });
-        }
-      }
-    }
-  } catch(e) {}
-
   // Tag every trackable element with a stable id (idempotent walk in document order)
   var TRACKABLE = 'h1,h2,h3,h4,p,li,img,.eyebrow,.q,.text,.session-tag,.result-pill,.num,.myth-tag,.photo-caption,.meta,a.cta-btn,.cover-badge,.case-photo,.photo-block,.who-team-photo,.case .ph';
   document.querySelectorAll(TRACKABLE).forEach(function(el, i){
@@ -1179,17 +1160,14 @@
         '<button class="ed-btn secondary" data-img-delete style="margin-top:14px;color:#FCA5A5">Delete image</button>',
       '</div>',
     '</div>',
-    '<div class="ed-section"><h4>Import PowerPoint</h4>',
-      '<p class="ed-hint">Load a .pptx file. Text and images from each slide become new editable slides appended to the deck.</p>',
-      '<button class="ed-btn secondary" data-import-pptx>Choose .pptx file…</button>',
-    '</div>',
-    '<div class="ed-section"><h4>Save</h4>',
-      '<p class="ed-hint">Saves all edits to this browser. Reopen the page and your changes come back automatically.</p>',
+    '<div class="ed-section"><h4>Save & Export</h4>',
+      '<p class="ed-hint">Save edits to this browser, or export the finished deck as a file.</p>',
       '<button class="ed-btn" data-save>Save changes</button>',
       '<div class="ed-row" style="gap:6px;margin-top:10px">',
         '<button class="ed-btn secondary" data-export style="flex:1;padding:9px;font-size:11px">Export HTML</button>',
-        '<button class="ed-btn secondary" data-clear style="flex:1;padding:9px;font-size:11px;color:#FCA5A5">Reset</button>',
+        '<button class="ed-btn secondary" data-export-pptx style="flex:1;padding:9px;font-size:11px">Export PowerPoint</button>',
       '</div>',
+      '<button class="ed-btn secondary" data-clear style="width:100%;margin-top:8px;padding:9px;font-size:11px;color:#FCA5A5">Reset all edits</button>',
     '</div>'
   ].join('');
   document.body.appendChild(panel);
@@ -1896,24 +1874,10 @@
       return f !== 'Inter' && f !== 'Instrument Serif' && f !== 'JetBrains Mono';
     });
 
-    // Imported PowerPoint slides: keep their current HTML
-    var importedSlides = [];
-    document.querySelectorAll('.slide[data-ed-imported]').forEach(function(slide){
-      var clone = slide.cloneNode(true);
-      clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
-      clone.querySelectorAll('[contenteditable]').forEach(function(n){
-        n.removeAttribute('contenteditable');
-        n.removeAttribute('spellcheck');
-      });
-      clone.querySelectorAll('[data-ed-id]').forEach(function(n){ n.removeAttribute('data-ed-id'); });
-      importedSlides.push(clone.outerHTML);
-    });
-
     return {
       changes: changes,
       placed: placed,
       fonts: fonts,
-      importedSlides: importedSlides,
       htmlStyle: document.documentElement.getAttribute('style') || '',
       savedAt: Date.now()
     };
@@ -1939,138 +1903,155 @@
     location.reload();
   });
 
-  /* ---------- PowerPoint (.pptx) import ---------- */
-  function loadJSZip(){
-    if (window.JSZip) return Promise.resolve(window.JSZip);
+  /* ---------- PowerPoint (.pptx) export ---------- */
+  function loadPptxGenJS(){
+    if (window.PptxGenJS) return Promise.resolve(window.PptxGenJS);
     return new Promise(function(resolve, reject){
       var s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+      s.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
       s.setAttribute('data-editor', '1');
-      s.onload = function(){ resolve(window.JSZip); };
-      s.onerror = function(){ reject(new Error('JSZip failed to load')); };
+      s.onload = function(){ resolve(window.PptxGenJS); };
+      s.onerror = function(){ reject(new Error('PptxGenJS failed to load')); };
       document.head.appendChild(s);
     });
   }
 
-  function escapeAttr(s){
-    return String(s).replace(/[&<>"']/g, function(c){
-      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  function imgElementToDataUrl(img){
+    return new Promise(function(resolve){
+      if (img.src && img.src.indexOf('data:') === 0) { resolve(img.src); return; }
+      try {
+        var c = document.createElement('canvas');
+        c.width = img.naturalWidth || img.width || 400;
+        c.height = img.naturalHeight || img.height || 400;
+        var ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      } catch(e) { resolve(null); /* CORS-tainted canvases skip */ }
     });
   }
 
-  async function importPptx(file){
+  // Convert CSS rgb()/rgba()/hex to pptx hex (FFFFFF, no #)
+  function cssColorToPptxHex(color, fallback){
+    if (!color) return fallback || '000000';
+    color = String(color).trim();
+    if (color.charAt(0) === '#') {
+      if (color.length === 4) {
+        return (color[1]+color[1]+color[2]+color[2]+color[3]+color[3]).toUpperCase();
+      }
+      return color.slice(1,7).toUpperCase();
+    }
+    var m = color.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    if (m) {
+      return [m[1],m[2],m[3]].map(function(n){
+        var h = parseInt(n,10).toString(16);
+        return h.length < 2 ? '0'+h : h;
+      }).join('').toUpperCase();
+    }
+    return fallback || '000000';
+  }
+
+  async function exportPptx(){
     try {
-      showToast('Loading PowerPoint…');
-      var JSZipLib = await loadJSZip();
-      var zip = await JSZipLib.loadAsync(file);
+      showToast('Loading PowerPoint library…');
+      var Pptx = await loadPptxGenJS();
+      var pres = new Pptx();
+      pres.layout = 'LAYOUT_WIDE'; // 13.333 × 7.5 inches
+      pres.title = document.title || 'Slide Deck';
 
-      // Collect slide files in order
-      var slideEntries = [];
-      Object.keys(zip.files).forEach(function(name){
-        var m = name.match(/^ppt\/slides\/slide(\d+)\.xml$/);
-        if (m) slideEntries.push({ name: name, num: parseInt(m[1], 10) });
-      });
-      slideEntries.sort(function(a, b){ return a.num - b.num; });
+      var slides = document.querySelectorAll('.slide');
+      showToast('Generating ' + slides.length + ' slides…');
 
-      if (slideEntries.length === 0) {
-        showToast('No slides found in file', 'err');
-        return;
-      }
+      for (var i = 0; i < slides.length; i++) {
+        var slide = slides[i];
+        var ps = pres.addSlide();
 
-      showToast('Parsing ' + slideEntries.length + ' slides…');
+        var slideStyle = getComputedStyle(slide);
+        var bg = cssColorToPptxHex(slideStyle.backgroundColor, '000000');
+        if (bg === '000000' || bg === '0E0E0E') ps.background = { color: '000000' };
+        else ps.background = { color: bg };
 
-      var importedHtml = [];
-      for (var i = 0; i < slideEntries.length; i++) {
-        var slide = slideEntries[i];
-        var xml = await zip.file(slide.name).async('text');
-
-        // Extract paragraphs: each <a:p> block collects text from its <a:t> children
-        var paragraphs = [];
-        var pBlocks = xml.match(/<a:p[\s\S]*?<\/a:p>/g) || [];
-        pBlocks.forEach(function(pBlock){
-          var tMatches = pBlock.match(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g) || [];
-          var text = tMatches.map(function(t){
-            return t.replace(/<[^>]+>/g, '');
-          }).join('').trim();
-          if (text) paragraphs.push(text);
-        });
-
-        // Extract images: resolve <a:blip r:embed="rId"> via slide rels
-        var rels = {};
-        var relsFile = zip.file('ppt/slides/_rels/slide' + slide.num + '.xml.rels');
-        if (relsFile) {
-          var relsXml = await relsFile.async('text');
-          var relPattern = /<Relationship\s+Id="([^"]+)"[^>]*Target="([^"]+)"/g;
-          var rm;
-          while ((rm = relPattern.exec(relsXml)) !== null) {
-            rels[rm[1]] = rm[2];
-          }
+        // First heading is the title
+        var headings = slide.querySelectorAll('h1, h2, h3, h4');
+        var title = null;
+        for (var t = 0; t < headings.length; t++) {
+          if (!headings[t].closest('.ed-panel, .brandbar')) { title = headings[t]; break; }
         }
-        var images = [];
-        var blipPattern = /<a:blip[^>]+r:embed="([^"]+)"/g;
-        var bm;
-        while ((bm = blipPattern.exec(xml)) !== null) {
-          var embedId = bm[1];
-          if (rels[embedId]) {
-            var imgPath = rels[embedId].replace(/^\.\.\//, 'ppt/');
-            var imgFile = zip.file(imgPath);
-            if (imgFile) {
-              var b64 = await imgFile.async('base64');
-              var ext = (imgPath.split('.').pop() || '').toLowerCase();
-              var mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' :
-                         ext === 'png' ? 'image/png' :
-                         ext === 'gif' ? 'image/gif' :
-                         ext === 'svg' ? 'image/svg+xml' :
-                         'image/' + ext;
-              images.push('data:' + mime + ';base64,' + b64);
+        if (title && title.textContent.trim()) {
+          var titleColor = cssColorToPptxHex(getComputedStyle(title).color, 'FFFFFF');
+          ps.addText(title.textContent.trim(), {
+            x: 0.5, y: 0.45, w: 12.3, h: 1.5,
+            fontSize: title.tagName === 'H1' ? 40 : 30,
+            bold: true, color: titleColor,
+            fontFace: 'Inter', valign: 'top'
+          });
+        }
+
+        // Collect body text (paragraphs, list items, eyebrows, quotes, etc.)
+        var bodyNodes = slide.querySelectorAll(
+          'p, li, .eyebrow, .text, .q, .num, .myth-tag, .session-tag, .photo-caption, .meta, .lead, .result-pill, a.cta-btn'
+        );
+        var textRuns = [];
+        var seen = {};
+        bodyNodes.forEach(function(el){
+          if (el.closest('.brandbar, .controls, .ed-panel')) return;
+          var txt = el.textContent.replace(/\s+/g,' ').trim();
+          if (!txt) return;
+          if (seen[txt]) return;
+          seen[txt] = true;
+          if (title && txt === title.textContent.trim()) return;
+          var color = cssColorToPptxHex(getComputedStyle(el).color, 'CCCCCC');
+          var isAccent = el.matches('.eyebrow, .myth-tag, .session-tag, .photo-caption, .num, .result-pill');
+          var isCta = el.matches('a.cta-btn');
+          var isLead = el.matches('.lead, .q');
+          textRuns.push({
+            text: (isAccent ? txt.toUpperCase() : txt) + '\n',
+            options: {
+              fontSize: isCta ? 18 : isAccent ? 11 : isLead ? 18 : 14,
+              bold: isCta || isAccent,
+              color: isCta ? 'F323A1' : color,
+              breakLine: true
             }
-          }
+          });
+        });
+        if (textRuns.length) {
+          // Add a blank space at end so last paragraph has trailing room
+          ps.addText(textRuns, {
+            x: 0.5, y: 2.1, w: 8.6, h: 5.1,
+            fontFace: 'Inter', valign: 'top', paraSpaceAfter: 6
+          });
         }
 
-        // Build slide HTML
-        var html = '<section class="slide" data-ed-imported="1"><div class="narrow">';
-        if (paragraphs.length > 0) {
-          html += '<h2>' + escapeAttr(paragraphs[0]) + '</h2>';
-          for (var n = 1; n < paragraphs.length; n++) {
-            html += '<p>' + escapeAttr(paragraphs[n]) + '</p>';
-          }
+        // Images on the right (limit 2 per slide to keep layout sane)
+        var imgs = slide.querySelectorAll('img');
+        var imgY = 2.1;
+        var placed = 0;
+        for (var k = 0; k < imgs.length && placed < 2; k++) {
+          var img = imgs[k];
+          if (img.closest('.brandbar, .ed-panel')) continue;
+          var data = await imgElementToDataUrl(img);
+          if (!data) continue;
+          var nw = img.naturalWidth || 400, nh = img.naturalHeight || 400;
+          var ar = nw / nh;
+          var w = 3.6;
+          var h = w / ar;
+          if (h > 5) { h = 5; w = h * ar; }
+          ps.addImage({ data: data, x: 13.333 - 0.5 - w, y: imgY, w: w, h: h });
+          imgY += h + 0.25;
+          placed++;
         }
-        for (var p = 0; p < images.length; p++) {
-          html += '<img src="' + images[p] + '" alt="" style="max-width:480px;width:100%;height:auto;display:block;margin:24px auto;border-radius:12px">';
-        }
-        html += '</div></section>';
-        importedHtml.push(html);
       }
 
-      // Merge with existing state and persist, then reload to let restore+nav pick everything up
-      var prev = {};
-      try { prev = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch(e){}
-      var state = buildState();
-      state.importedSlides = (prev.importedSlides || []).concat(importedHtml);
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch(err) {
-        showToast(err.name === 'QuotaExceededError' ? 'Storage full — file too large' : 'Save failed', 'err');
-        return;
-      }
-      showToast('Imported ' + importedHtml.length + ' slides · reloading…', 'ok');
-      setTimeout(function(){ location.reload(); }, 1400);
+      showToast('Writing .pptx file…');
+      var fname = (document.title || 'slides').replace(/[^a-z0-9\-_]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'slides';
+      await pres.writeFile({ fileName: fname + '.pptx' });
+      showToast('PowerPoint exported · ' + fname + '.pptx', 'ok');
     } catch(e) {
       console.error(e);
-      showToast('Import failed: ' + (e.message || e), 'err');
+      showToast('PPTX export failed: ' + (e.message || e), 'err');
     }
   }
 
-  panel.querySelector('[data-import-pptx]').addEventListener('click', function(){
-    var input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation';
-    input.onchange = function(){
-      var file = input.files && input.files[0];
-      if (file) importPptx(file);
-    };
-    input.click();
-  });
+  panel.querySelector('[data-export-pptx]').addEventListener('click', exportPptx);
 
   /* ---------- Export to HTML file ---------- */
   panel.querySelector('[data-export]').addEventListener('click', function(){
