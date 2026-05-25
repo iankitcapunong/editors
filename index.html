@@ -1214,7 +1214,9 @@
         '<button class="ed-btn secondary" data-export style="flex:1;padding:9px;font-size:11px">Export HTML</button>',
         '<button class="ed-btn secondary" data-export-pptx style="flex:1;padding:9px;font-size:11px">Export PowerPoint</button>',
       '</div>',
-      '<button class="ed-btn secondary" data-clear style="width:100%;margin-top:8px;padding:9px;font-size:11px;color:#FCA5A5">Reset all edits</button>',
+      '<button class="ed-btn" data-export-canva style="width:100%;margin-top:10px;padding:11px;font-size:11px">Export to Canva</button>',
+      '<p class="ed-hint" style="margin-top:6px">Downloads a .pptx and opens Canva so you can drag-drop the file to import.</p>',
+      '<button class="ed-btn secondary" data-clear style="width:100%;margin-top:10px;padding:9px;font-size:11px;color:#FCA5A5">Reset all edits</button>',
     '</div>'
   ].join('');
   document.body.appendChild(panel);
@@ -2124,6 +2126,26 @@
   }
 
   panel.querySelector('[data-export-pptx]').addEventListener('click', exportPptx);
+
+  /* Export to Canva = generate .pptx + open Canva so user can drop the file to import */
+  panel.querySelector('[data-export-canva]').addEventListener('click', async function(){
+    // Open Canva FIRST while we still have user-gesture permission for window.open.
+    // Use the design-create URL so the upload flow is one step closer.
+    var canvaTab = null;
+    try { canvaTab = window.open('https://www.canva.com/design?create_in_canva=true', '_blank', 'noopener'); } catch(e){}
+    if (!canvaTab) {
+      // Popup was blocked — try a plain link as a fallback
+      try { canvaTab = window.open('https://www.canva.com/', '_blank'); } catch(e){}
+    }
+
+    await exportPptx();
+
+    // Slight delay so this toast lands after the export's success toast
+    setTimeout(function(){
+      showToast('Drop the .pptx into the Canva tab to import', 'ok');
+      try { if (canvaTab && !canvaTab.closed) canvaTab.focus(); } catch(e){}
+    }, 1600);
+  });
 
   /* ---------- Export to HTML file ---------- */
   panel.querySelector('[data-export]').addEventListener('click', function(){
