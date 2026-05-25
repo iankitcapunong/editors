@@ -863,6 +863,8 @@
     'body.edit-mode [contenteditable="true"]:focus{outline:2px solid #F323A1;outline-offset:4px;background:rgba(243,35,161,.05)}',
     'body.edit-mode img{cursor:pointer;transition:outline .15s ease}',
     'body.edit-mode img:hover{outline:2px dashed #F323A1;outline-offset:4px}',
+    /* Re-enable interaction on the fixed brandbar so the logo + session tag are editable */
+    'body.edit-mode .brandbar{pointer-events:auto}',
     'body.ed-panel-open .deck,body.ed-panel-open .brandbar,body.ed-panel-open .controls{right:340px}',
     '@media (max-width:760px){body.ed-panel-open .deck,body.ed-panel-open .brandbar,body.ed-panel-open .controls{right:0}.ed-panel{width:100%!important}}',
     '.ed-panel{position:fixed;top:0;right:0;bottom:0;width:340px;max-width:100vw;background:#0a0a0a;border-left:1px solid rgba(255,255,255,.1);z-index:9999;overflow-y:auto;transform:translateX(100%);transition:transform .3s ease;font-family:"Inter",system-ui,sans-serif;color:#fff;box-shadow:-10px 0 40px rgba(0,0,0,.5)}',
