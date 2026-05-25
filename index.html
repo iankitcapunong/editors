@@ -1059,7 +1059,23 @@
         '</select></div>',
         '<div class="ed-row"><label>Max width (px)</label><input type="number" min="40" max="2000" data-img-width placeholder="auto"></div>',
         '<div class="ed-row"><label>Rounded corners</label><input type="number" min="0" max="200" data-img-radius placeholder="0"></div>',
-        '<button class="ed-btn secondary" data-img-delete style="margin-top:10px;color:#FCA5A5">Delete image</button>',
+        '<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06)">',
+          '<div class="ed-row"><label>Background</label><input type="color" data-img-bg><button class="ed-btn secondary" data-img-bg-clear style="flex:0 0 auto;padding:6px 10px;font-size:10px">Clear</button></div>',
+          '<div class="ed-row"><label>Gradient · A</label><input type="color" data-img-grad-a></div>',
+          '<div class="ed-row"><label>Gradient · B</label><input type="color" data-img-grad-b></div>',
+          '<div class="ed-row"><label>Gradient angle</label><select data-img-grad-angle>',
+            '<option value="">off</option><option value="0deg">↑ 0°</option><option value="45deg">↗ 45°</option><option value="90deg">→ 90°</option><option value="135deg">↘ 135°</option><option value="180deg">↓ 180°</option><option value="225deg">↙ 225°</option><option value="270deg">← 270°</option><option value="315deg">↖ 315°</option>',
+          '</select></div>',
+          '<div class="ed-row"><label>Border color</label><input type="color" data-img-border-color></div>',
+          '<div class="ed-row"><label>Border width (px)</label><input type="number" min="0" max="40" data-img-border-width placeholder="0"></div>',
+          '<div class="ed-row"><label>Shadow color</label><input type="color" data-img-shadow-color></div>',
+          '<div class="ed-row"><label>Shadow size (px)</label><input type="number" min="0" max="120" data-img-shadow-size placeholder="0"></div>',
+          '<div class="ed-row"><label>Brightness (%)</label><input type="number" min="0" max="300" data-img-bright placeholder="100"></div>',
+          '<div class="ed-row"><label>Saturation (%)</label><input type="number" min="0" max="300" data-img-sat placeholder="100"></div>',
+          '<div class="ed-row"><label>Blur (px)</label><input type="number" min="0" max="40" data-img-blur placeholder="0"></div>',
+          '<button class="ed-btn secondary" data-img-fx-reset style="margin-top:6px;font-size:11px">Reset effects</button>',
+        '</div>',
+        '<button class="ed-btn secondary" data-img-delete style="margin-top:14px;color:#FCA5A5">Delete image</button>',
       '</div>',
     '</div>',
     '<div class="ed-section"><h4>Save</h4>',
@@ -1280,6 +1296,56 @@
   var imgPos = panel.querySelector('[data-img-pos]');
   var imgWidth = panel.querySelector('[data-img-width]');
   var imgRadius = panel.querySelector('[data-img-radius]');
+  var imgBg = panel.querySelector('[data-img-bg]');
+  var imgBgClear = panel.querySelector('[data-img-bg-clear]');
+  var imgGradA = panel.querySelector('[data-img-grad-a]');
+  var imgGradB = panel.querySelector('[data-img-grad-b]');
+  var imgGradAngle = panel.querySelector('[data-img-grad-angle]');
+  var imgBorderColor = panel.querySelector('[data-img-border-color]');
+  var imgBorderWidth = panel.querySelector('[data-img-border-width]');
+  var imgShadowColor = panel.querySelector('[data-img-shadow-color]');
+  var imgShadowSize = panel.querySelector('[data-img-shadow-size]');
+  var imgBright = panel.querySelector('[data-img-bright]');
+  var imgSat = panel.querySelector('[data-img-sat]');
+  var imgBlur = panel.querySelector('[data-img-blur]');
+  var imgFxReset = panel.querySelector('[data-img-fx-reset]');
+
+  function applyImgGradient(){
+    if (!selectedImg) return;
+    var a = imgGradA.value, b = imgGradB.value, ang = imgGradAngle.value;
+    if (ang && a && b) {
+      selectedImg.style.background = 'linear-gradient(' + ang + ', ' + a + ', ' + b + ')';
+    }
+  }
+  function applyImgBorder(){
+    if (!selectedImg) return;
+    var w = parseInt(imgBorderWidth.value, 10);
+    if (w > 0) {
+      selectedImg.style.border = w + 'px solid ' + (imgBorderColor.value || '#ffffff');
+    } else {
+      selectedImg.style.border = '';
+    }
+  }
+  function applyImgShadow(){
+    if (!selectedImg) return;
+    var s = parseInt(imgShadowSize.value, 10);
+    if (s > 0) {
+      selectedImg.style.boxShadow = '0 0 ' + s + 'px ' + (imgShadowColor.value || '#000000');
+    } else {
+      selectedImg.style.boxShadow = '';
+    }
+  }
+  function applyImgFilter(){
+    if (!selectedImg) return;
+    var b = parseInt(imgBright.value, 10);
+    var s = parseInt(imgSat.value, 10);
+    var bl = parseInt(imgBlur.value, 10);
+    var parts = [];
+    if (!isNaN(b) && b !== 100) parts.push('brightness(' + b + '%)');
+    if (!isNaN(s) && s !== 100) parts.push('saturate(' + s + '%)');
+    if (!isNaN(bl) && bl > 0) parts.push('blur(' + bl + 'px)');
+    selectedImg.style.filter = parts.join(' ');
+  }
 
   function showImageControls(img){
     imgEmpty.style.display = 'none';
@@ -1292,9 +1358,78 @@
     imgPos.value = img.style.objectPosition || '';
     imgWidth.value = img.style.maxWidth ? parseInt(img.style.maxWidth, 10) : '';
     imgRadius.value = img.style.borderRadius ? parseInt(img.style.borderRadius, 10) : '';
+    var bg = img.style.backgroundColor || '';
+    imgBg.value = bg ? toHex(bg) : '#000000';
+    // Parse existing gradient if any
+    var bgImg = img.style.backgroundImage || '';
+    var gm = bgImg.match(/linear-gradient\((\-?\d+deg)\s*,\s*([^,]+),\s*([^\)]+)\)/);
+    if (gm) {
+      imgGradAngle.value = gm[1];
+      imgGradA.value = toHex(gm[2].trim());
+      imgGradB.value = toHex(gm[3].trim());
+    } else {
+      imgGradAngle.value = '';
+      imgGradA.value = '#F323A1';
+      imgGradB.value = '#FF5FC4';
+    }
+    var bw = img.style.borderWidth ? parseInt(img.style.borderWidth, 10) : 0;
+    imgBorderWidth.value = bw || '';
+    imgBorderColor.value = img.style.borderColor ? toHex(img.style.borderColor) : '#ffffff';
+    var shadowMatch = (img.style.boxShadow || '').match(/(\d+)px\s+(#?[\w\(\),.\s]+)$/);
+    if (shadowMatch) {
+      imgShadowSize.value = shadowMatch[1];
+      imgShadowColor.value = toHex(shadowMatch[2].trim());
+    } else {
+      imgShadowSize.value = '';
+      imgShadowColor.value = '#000000';
+    }
+    var filter = img.style.filter || '';
+    var bm = filter.match(/brightness\((\d+)%\)/);
+    var sm = filter.match(/saturate\((\d+)%\)/);
+    var blm = filter.match(/blur\((\d+)px\)/);
+    imgBright.value = bm ? bm[1] : '';
+    imgSat.value = sm ? sm[1] : '';
+    imgBlur.value = blm ? blm[1] : '';
   }
   panel.querySelector('[data-img-replace]').addEventListener('click', function(){
     if (selectedImg) replaceImage(selectedImg);
+  });
+  imgBg.addEventListener('input', function(){
+    if (selectedImg) selectedImg.style.backgroundColor = imgBg.value;
+  });
+  imgBgClear.addEventListener('click', function(){
+    if (!selectedImg) return;
+    selectedImg.style.backgroundColor = '';
+    selectedImg.style.backgroundImage = '';
+    selectedImg.style.background = '';
+    imgGradAngle.value = '';
+  });
+  imgGradA.addEventListener('input', applyImgGradient);
+  imgGradB.addEventListener('input', applyImgGradient);
+  imgGradAngle.addEventListener('change', function(){
+    if (!selectedImg) return;
+    if (!imgGradAngle.value) {
+      selectedImg.style.backgroundImage = '';
+    } else {
+      applyImgGradient();
+    }
+  });
+  imgBorderColor.addEventListener('input', applyImgBorder);
+  imgBorderWidth.addEventListener('input', applyImgBorder);
+  imgShadowColor.addEventListener('input', applyImgShadow);
+  imgShadowSize.addEventListener('input', applyImgShadow);
+  imgBright.addEventListener('input', applyImgFilter);
+  imgSat.addEventListener('input', applyImgFilter);
+  imgBlur.addEventListener('input', applyImgFilter);
+  imgFxReset.addEventListener('click', function(){
+    if (!selectedImg) return;
+    selectedImg.style.background = '';
+    selectedImg.style.backgroundColor = '';
+    selectedImg.style.backgroundImage = '';
+    selectedImg.style.border = '';
+    selectedImg.style.boxShadow = '';
+    selectedImg.style.filter = '';
+    showImageControls(selectedImg);
   });
   imgAlt.addEventListener('input', function(){
     if (selectedImg) selectedImg.setAttribute('alt', imgAlt.value);
