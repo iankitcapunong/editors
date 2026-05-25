@@ -1381,14 +1381,22 @@
     var frame = getImgFrame();
     if (!frame) return;
     var a = imgGradA.value, b = imgGradB.value, ang = imgGradAngle.value;
-    var grad = (ang && a && b) ? ('linear-gradient(' + ang + ', ' + a + ', ' + b + ')') : '';
-    // .cover-badge has a ::before halo controlled by --badge-glow.
-    // Set the var so the user's gradient replaces the default radial pink halo.
+    // For the badge: convert any two-color gradient into a radial fade-to-transparent
+    // (preserves the "glow / shadow" look instead of a flat colored ring).
     if (frame.classList.contains('cover-badge')) {
-      if (grad) frame.style.setProperty('--badge-glow', grad);
-      else frame.style.removeProperty('--badge-glow');
-    } else if (grad) {
-      frame.style.backgroundImage = grad;
+      if (a && b && ang) {
+        var glow = 'radial-gradient(circle, ' + a + ', ' + b + ' 45%, transparent 70%)';
+        frame.style.setProperty('--badge-glow', glow);
+      } else {
+        frame.style.removeProperty('--badge-glow');
+      }
+      return;
+    }
+    // Other wrappers: rectangular shapes - linear gradient is fine.
+    if (a && b && ang) {
+      frame.style.backgroundImage = 'linear-gradient(' + ang + ', ' + a + ', ' + b + ')';
+    } else {
+      frame.style.backgroundImage = '';
     }
   }
   function applyImgBorder(){
@@ -1480,7 +1488,8 @@
     var frame = getImgFrame();
     if (!frame) return;
     if (frame.classList.contains('cover-badge')) {
-      frame.style.setProperty('--badge-glow', imgBg.value);
+      // Solid color on the badge -> radial fade so it reads as a glow / shadow
+      frame.style.setProperty('--badge-glow', 'radial-gradient(circle, ' + imgBg.value + ', transparent 65%)');
     } else {
       frame.style.backgroundColor = imgBg.value;
     }
