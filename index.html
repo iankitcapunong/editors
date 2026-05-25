@@ -956,11 +956,76 @@
   function wireImage(img){
     if (img.dataset.edWired) return;
     img.dataset.edWired = '1';
-    img.addEventListener('click', function(e){
+
+    // Brandbar logo: just click-to-select, never drag (it's a fixed header)
+    if (img.closest('.brandbar')) {
+      img.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        selectedImg = img;
+        showImageControls(img);
+      });
+      return;
+    }
+
+    // All other images: click-and-drag on the image body to move; plain click to select
+    img.addEventListener('mousedown', function(e){
+      if (e.button !== 0) return;
+      var startX = e.clientX, startY = e.clientY;
+      var didMove = false;
+      var target = null, slide = null, slideRect, origLeft, origTop;
+
+      function beginDrag(){
+        target = getMovableTarget(img);
+        if (!target) return false;
+        slide = target.closest('.slide');
+        if (!slide) return false;
+        if (getComputedStyle(target).position !== 'absolute') {
+          var sr = slide.getBoundingClientRect();
+          var r  = target.getBoundingClientRect();
+          var w  = target.offsetWidth;
+          target.style.position = 'absolute';
+          target.style.left = (r.left - sr.left) + 'px';
+          target.style.top  = (r.top  - sr.top)  + 'px';
+          if (!target.style.width) target.style.width = w + 'px';
+          target.style.margin = '0';
+          target.style.zIndex = '5';
+        }
+        slideRect = slide.getBoundingClientRect();
+        origLeft = parseFloat(target.style.left) || 0;
+        origTop  = parseFloat(target.style.top)  || 0;
+        target.classList.add('ed-dragging');
+        return true;
+      }
+
+      function onMove(ev){
+        var dx = ev.clientX - startX;
+        var dy = ev.clientY - startY;
+        if (!didMove) {
+          if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+          if (!beginDrag()) return;
+          didMove = true;
+        }
+        var nx = origLeft + dx;
+        var ny = origTop  + dy;
+        nx = Math.max(0, Math.min(slideRect.width  - 20, nx));
+        ny = Math.max(0, Math.min(slideRect.height - 20, ny));
+        target.style.left = nx + 'px';
+        target.style.top  = ny + 'px';
+        ev.preventDefault();
+      }
+      function onUp(){
+        if (target) target.classList.remove('ed-dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!didMove) {
+          selectedImg = img;
+          showImageControls(img);
+        }
+      }
       e.preventDefault();
-      e.stopPropagation();
-      selectedImg = img;
-      showImageControls(img);
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     });
   }
   document.querySelectorAll('img').forEach(wireImage);
@@ -1449,7 +1514,7 @@
   });
   panel.querySelector('[data-img-delete]').addEventListener('click', function(){
     if (!selectedImg) return;
-    var host = selectedImg.closest('.ed-placed');
+    var host = getMovableTarget(selectedImg);
     (host || selectedImg).remove();
     selectedImg = null;
     imgEmpty.style.display = 'block';
