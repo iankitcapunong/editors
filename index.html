@@ -2036,20 +2036,9 @@
       document.head.appendChild(s);
     });
   }
-  function loadHtmlToImage(){
-    if (window.htmlToImage) return Promise.resolve(window.htmlToImage);
-    return new Promise(function(resolve, reject){
-      var s = document.createElement('script');
-      // html-to-image uses SVG foreignObject — keeps gradients, custom fonts,
-      // drop-shadow filters, CSS variables, ::before pseudo-elements far more faithfully than html2canvas.
-      s.src = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js';
-      s.setAttribute('data-editor', '1');
-      s.onload = function(){ resolve(window.htmlToImage); };
-      s.onerror = function(){ reject(new Error('html-to-image failed to load')); };
-      document.head.appendChild(s);
-    });
-  }
-
+  /* Structured PPTX export: walks each slide and emits text boxes and images
+     as positioned PowerPoint objects so the result is fully editable in
+     PowerPoint / Canva / Keynote — no screenshot images. */
   function preloadAllImages(){
     var imgs = document.querySelectorAll('img');
     var promises = [];
@@ -2065,6 +2054,137 @@
     return Promise.all(promises);
   }
 
+  // 1920px ÷ 13.333 in ≈ 144 px per inch (LAYOUT_WIDE 16:9)
+  function pxToIn(px){ return px / 144; }
+  function pxToPt(px){ return px * 0.75; }
+  function cssToHex(color, fallback){
+    if (!color) return fallback || null;
+    color = String(color).trim();
+    if (color === 'transparent' || color === 'rgba(0, 0, 0, 0)') return fallback || null;
+    if (color.charAt(0) === '#') {
+      if (color.length === 4) return (color[1]+color[1]+color[2]+color[2]+color[3]+color[3]).toUpperCase();
+      return color.slice(1,7).toUpperCase();
+    }
+    var m = color.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    if (m) {
+      return [m[1],m[2],m[3]].map(function(n){
+        var h = parseInt(n,10).toString(16);
+        return h.length < 2 ? '0'+h : h;
+      }).join('').toUpperCase();
+    }
+    return fallback || null;
+  }
+  function getFontName(fontFamily){
+    if (!fontFamily) return 'Inter';
+    var first = fontFamily.split(',')[0].trim().replace(/^["']|["']$/g, '');
+    return first || 'Inter';
+  }
+  function imgToDataUrl(img){
+    if (img.src && img.src.indexOf('data:') === 0) return img.src;
+    try {
+      var c = document.createElement('canvas');
+      c.width = img.naturalWidth || img.width || 200;
+      c.height = img.naturalHeight || img.height || 200;
+      var ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      return c.toDataURL('image/png');
+    } catch(e) { return null; }
+  }
+
+  var TEXT_SEL = 'h1, h2, h3, h4, p, li, .eyebrow, .q, .text, .session-tag, .result-pill, .num, .myth-tag, .photo-caption, .meta > span, a.cta-btn';
+
+  function captureRootToSlide(ps, root, slideRect){
+    // Images first so text lands on top
+    root.querySelectorAll('img').forEach(function(img){
+      if (img.closest('.ed-panel, .controls')) return;
+      var rect = img.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      var x = pxToIn(rect.left - slideRect.left);
+      var y = pxToIn(rect.top - slideRect.top);
+      var w = pxToIn(rect.width);
+      var h = pxToIn(rect.height);
+      if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+      var data = imgToDataUrl(img);
+      if (!data) return;
+      try {
+        ps.addImage({
+          data: data,
+          x: Math.max(0, x), y: Math.max(0, y),
+          w: w, h: h
+        });
+      } catch(e){}
+    });
+
+    // Text elements
+    root.querySelectorAll(TEXT_SEL).forEach(function(el){
+      if (el.closest('.ed-panel, .controls')) return;
+      // Skip if any ancestor inside the same root also matches a text selector
+      // (e.g. <span class="accent"> inside an <h1> — the h1 captures the full text)
+      var anc = el.parentElement;
+      while (anc && anc !== root) {
+        try { if (anc.matches && anc.matches(TEXT_SEL)) return; } catch(e){}
+        anc = anc.parentElement;
+      }
+      // Get text, excluding editor-only children (drag handles, etc.)
+      var clone = el.cloneNode(true);
+      clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
+      var text = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text) return;
+
+      var rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      var style = getComputedStyle(el);
+      var x = pxToIn(rect.left - slideRect.left);
+      var y = pxToIn(rect.top - slideRect.top);
+      var w = pxToIn(rect.width);
+      var h = pxToIn(rect.height);
+      if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+
+      var fontSize = parseFloat(style.fontSize) || 16;
+      var fontWeight = parseInt(style.fontWeight) || 400;
+      var color = cssToHex(style.color, 'FFFFFF') || 'FFFFFF';
+      var fontFace = getFontName(style.fontFamily);
+      var align = style.textAlign === 'center' ? 'center'
+                : style.textAlign === 'right'  ? 'right'
+                : style.textAlign === 'justify' ? 'justify'
+                : 'left';
+      var displayText = style.textTransform === 'uppercase' ? text.toUpperCase() : text;
+
+      var opts = {
+        x: x, y: y, w: Math.min(13.333 - x, w + 0.15), h: Math.min(7.5 - y, h + 0.25),
+        fontSize: pxToPt(fontSize),
+        color: color,
+        fontFace: fontFace,
+        bold: fontWeight >= 600,
+        italic: style.fontStyle === 'italic',
+        align: align,
+        valign: 'top',
+        margin: 0,
+        isTextBox: true,
+        wrap: true
+      };
+
+      // CTA button: keep the pink fill & rounded corners
+      if (el.matches('a.cta-btn')) {
+        opts.fill = { color: cssToHex(style.backgroundColor, 'F323A1') || 'F323A1' };
+        opts.color = color;
+        opts.bold = true;
+        opts.align = 'center';
+        opts.valign = 'middle';
+      }
+      // Result pill: pink fill, dark text
+      if (el.matches('.result-pill')) {
+        opts.fill = { color: 'F323A1' };
+        opts.color = '000000';
+        opts.bold = true;
+        opts.align = 'center';
+        opts.valign = 'middle';
+      }
+
+      try { ps.addText(displayText, opts); } catch(e){}
+    });
+  }
+
   async function exportPptx(){
     var origActive = document.querySelector('.slide.active');
     var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
@@ -2073,10 +2193,8 @@
     var origHtmlCss = document.documentElement.getAttribute('style') || '';
     var origScrollY = window.scrollY;
     try {
-      showToast('Loading export libraries…');
-      var libs = await Promise.all([loadHtmlToImage(), loadPptxGenJS()]);
-      var h2i = libs[0];
-      var Pptx = libs[1];
+      showToast('Loading PowerPoint library…');
+      var Pptx = await loadPptxGenJS();
       var pres = new Pptx();
       pres.layout = 'LAYOUT_WIDE'; // 13.333 × 7.5 inches (16:9)
       pres.title = document.title || 'Slide Deck';
@@ -2087,8 +2205,7 @@
       document.body.classList.remove('ed-panel-open');
       document.body.classList.add('ed-capturing');
 
-      // Force a real 1920×1080 layout — this is the most reliable way to make
-      // fixed-position items (brandbar) and full-bleed slides render correctly.
+      // Force real desktop layout so getBoundingClientRect returns 1920×1080-scale coords
       document.documentElement.style.setProperty('width', '1920px', 'important');
       document.documentElement.style.setProperty('height', '1080px', 'important');
       document.body.style.setProperty('width', '1920px', 'important');
@@ -2096,48 +2213,29 @@
       document.body.style.setProperty('overflow', 'hidden', 'important');
       window.scrollTo(0, 0);
 
-      // Wait for layout reflow + fonts + images
-      await new Promise(function(r){ setTimeout(r, 200); });
+      await new Promise(function(r){ setTimeout(r, 250); });
       if (document.fonts && document.fonts.ready) {
         try { await document.fonts.ready; } catch(e){}
       }
       await preloadAllImages();
 
-      function filterNode(node){
-        if (!node || node.nodeType !== 1) return true;
-        try {
-          if (node.matches && node.matches('.ed-panel, .ed-toggle, .ed-toast, .ed-place-hint, .controls, .skip-link, [data-editor="1"]')) return false;
-          if (node.classList && node.classList.contains('ed-drag-handle')) return false;
-        } catch(e){}
-        return true;
-      }
+      var brandbar = document.querySelector('.brandbar');
 
       for (var i = 0; i < slides.length; i++) {
-        showToast('Rendering slide ' + (i + 1) + ' / ' + slides.length);
+        showToast('Building slide ' + (i + 1) + ' / ' + slides.length);
         slides.forEach(function(s){ s.classList.remove('active'); });
         slides[i].classList.add('active');
         slides[i].scrollTop = 0;
         await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
 
-        var dataUrl = await h2i.toJpeg(document.body, {
-          width: 1920,
-          height: 1080,
-          backgroundColor: '#000000',
-          quality: 0.92,
-          pixelRatio: 1,
-          cacheBust: false,
-          filter: filterNode,
-          style: {
-            width: '1920px',
-            height: '1080px',
-            margin: '0',
-            padding: '0'
-          }
-        });
-
         var ps = pres.addSlide();
-        ps.background = { color: '000000' };
-        ps.addImage({ data: dataUrl, x: 0, y: 0, w: 13.333, h: 7.5 });
+        var slideStyle = getComputedStyle(slides[i]);
+        var bgColor = cssToHex(slideStyle.backgroundColor, '000000') || '000000';
+        ps.background = { color: bgColor };
+
+        var slideRect = slides[i].getBoundingClientRect();
+        if (brandbar) captureRootToSlide(ps, brandbar, slideRect);
+        captureRootToSlide(ps, slides[i], slideRect);
       }
 
       showToast('Writing .pptx file…');
@@ -2148,7 +2246,6 @@
       console.error(e);
       showToast('PPTX export failed: ' + (e.message || e), 'err');
     } finally {
-      // Restore everything
       slides.forEach(function(s){ s.classList.remove('active'); });
       if (origActive) origActive.classList.add('active');
       else if (slides[0]) slides[0].classList.add('active');
