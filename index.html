@@ -898,7 +898,7 @@
     '.ed-place-hint{position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:10001;background:#F323A1;color:#fff;padding:10px 18px;border-radius:999px;font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;box-shadow:0 10px 30px rgba(243,35,161,.5);pointer-events:none}',
     /* Free-placed items (absolute position, draggable) */
     '.ed-placed{position:absolute;margin:0!important;z-index:5}',
-    '.ed-placed.ed-placed-img{display:inline-block}',
+    '.ed-placed.ed-placed-img{display:inline-block;overflow:hidden}',
     '.ed-drag-handle{position:absolute;top:4px;left:4px;width:26px;height:26px;background:linear-gradient(135deg,#F323A1,#FF5FC4);color:#fff;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:move;font-size:14px;font-weight:700;line-height:1;opacity:0;transition:opacity .15s ease;user-select:none;-webkit-user-select:none;box-shadow:0 4px 12px rgba(0,0,0,.5);z-index:10;pointer-events:auto}',
     '[data-ed-movable]:hover>.ed-drag-handle,.ed-placed:hover>.ed-drag-handle,.ed-placed.ed-dragging>.ed-drag-handle,[data-ed-movable].ed-dragging>.ed-drag-handle{opacity:1}',
     '.ed-placed.ed-dragging,[data-ed-movable].ed-dragging{outline:2px dashed #F323A1;outline-offset:4px}',
@@ -1377,32 +1377,39 @@
   var imgBlur = panel.querySelector('[data-img-blur]');
   var imgFxReset = panel.querySelector('[data-img-fx-reset]');
 
+  function getImgFrame(){
+    return selectedImg ? (getMovableTarget(selectedImg) || selectedImg) : null;
+  }
   function applyImgGradient(){
-    if (!selectedImg) return;
+    var frame = getImgFrame();
+    if (!frame) return;
     var a = imgGradA.value, b = imgGradB.value, ang = imgGradAngle.value;
     if (ang && a && b) {
-      selectedImg.style.background = 'linear-gradient(' + ang + ', ' + a + ', ' + b + ')';
+      frame.style.backgroundImage = 'linear-gradient(' + ang + ', ' + a + ', ' + b + ')';
     }
   }
   function applyImgBorder(){
-    if (!selectedImg) return;
+    var frame = getImgFrame();
+    if (!frame) return;
     var w = parseInt(imgBorderWidth.value, 10);
     if (w > 0) {
-      selectedImg.style.border = w + 'px solid ' + (imgBorderColor.value || '#ffffff');
+      frame.style.border = w + 'px solid ' + (imgBorderColor.value || '#ffffff');
     } else {
-      selectedImg.style.border = '';
+      frame.style.border = '';
     }
   }
   function applyImgShadow(){
-    if (!selectedImg) return;
+    var frame = getImgFrame();
+    if (!frame) return;
     var s = parseInt(imgShadowSize.value, 10);
     if (s > 0) {
-      selectedImg.style.boxShadow = '0 0 ' + s + 'px ' + (imgShadowColor.value || '#000000');
+      frame.style.boxShadow = '0 0 ' + s + 'px ' + (imgShadowColor.value || '#000000');
     } else {
-      selectedImg.style.boxShadow = '';
+      frame.style.boxShadow = '';
     }
   }
   function applyImgFilter(){
+    // Filter affects pixel rendering — must stay on the <img> itself
     if (!selectedImg) return;
     var b = parseInt(imgBright.value, 10);
     var s = parseInt(imgSat.value, 10);
@@ -1417,18 +1424,18 @@
   function showImageControls(img){
     imgEmpty.style.display = 'none';
     imgCtrls.style.display = 'block';
+    var frame = getMovableTarget(img) || img;
     var src = img.getAttribute('src') || '';
     var label = src.length > 60 ? src.slice(0,60) + '…' : src;
     if (src.indexOf('data:') === 0) label = '[uploaded image]';
     imgPreview.innerHTML = '<b>img</b>' + label.replace(/[&<>]/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});
     imgAlt.value = img.getAttribute('alt') || '';
     imgPos.value = img.style.objectPosition || '';
-    imgWidth.value = img.style.maxWidth ? parseInt(img.style.maxWidth, 10) : '';
-    imgRadius.value = img.style.borderRadius ? parseInt(img.style.borderRadius, 10) : '';
-    var bg = img.style.backgroundColor || '';
+    imgWidth.value = frame.style.maxWidth ? parseInt(frame.style.maxWidth, 10) : (img.style.maxWidth ? parseInt(img.style.maxWidth, 10) : '');
+    imgRadius.value = frame.style.borderRadius ? parseInt(frame.style.borderRadius, 10) : '';
+    var bg = frame.style.backgroundColor || '';
     imgBg.value = bg ? toHex(bg) : '#000000';
-    // Parse existing gradient if any
-    var bgImg = img.style.backgroundImage || '';
+    var bgImg = frame.style.backgroundImage || '';
     var gm = bgImg.match(/linear-gradient\((\-?\d+deg)\s*,\s*([^,]+),\s*([^\)]+)\)/);
     if (gm) {
       imgGradAngle.value = gm[1];
@@ -1439,10 +1446,10 @@
       imgGradA.value = '#F323A1';
       imgGradB.value = '#FF5FC4';
     }
-    var bw = img.style.borderWidth ? parseInt(img.style.borderWidth, 10) : 0;
+    var bw = frame.style.borderWidth ? parseInt(frame.style.borderWidth, 10) : 0;
     imgBorderWidth.value = bw || '';
-    imgBorderColor.value = img.style.borderColor ? toHex(img.style.borderColor) : '#ffffff';
-    var shadowMatch = (img.style.boxShadow || '').match(/(\d+)px\s+(#?[\w\(\),.\s]+)$/);
+    imgBorderColor.value = frame.style.borderColor ? toHex(frame.style.borderColor) : '#ffffff';
+    var shadowMatch = (frame.style.boxShadow || '').match(/(\d+)px\s+(#?[\w\(\),.\s]+)$/);
     if (shadowMatch) {
       imgShadowSize.value = shadowMatch[1];
       imgShadowColor.value = toHex(shadowMatch[2].trim());
@@ -1462,13 +1469,15 @@
     if (selectedImg) replaceImage(selectedImg);
   });
   imgBg.addEventListener('input', function(){
-    if (selectedImg) selectedImg.style.backgroundColor = imgBg.value;
+    var frame = getImgFrame();
+    if (frame) frame.style.backgroundColor = imgBg.value;
   });
   imgBgClear.addEventListener('click', function(){
-    if (!selectedImg) return;
-    selectedImg.style.backgroundColor = '';
-    selectedImg.style.backgroundImage = '';
-    selectedImg.style.background = '';
+    var frame = getImgFrame();
+    if (!frame) return;
+    frame.style.backgroundColor = '';
+    frame.style.backgroundImage = '';
+    frame.style.background = '';
     imgGradAngle.value = '';
   });
   imgGradA.addEventListener('input', applyImgGradient);
@@ -1489,12 +1498,13 @@
   imgSat.addEventListener('input', applyImgFilter);
   imgBlur.addEventListener('input', applyImgFilter);
   imgFxReset.addEventListener('click', function(){
-    if (!selectedImg) return;
-    selectedImg.style.background = '';
-    selectedImg.style.backgroundColor = '';
-    selectedImg.style.backgroundImage = '';
-    selectedImg.style.border = '';
-    selectedImg.style.boxShadow = '';
+    var frame = getImgFrame();
+    if (!frame || !selectedImg) return;
+    frame.style.background = '';
+    frame.style.backgroundColor = '';
+    frame.style.backgroundImage = '';
+    frame.style.border = '';
+    frame.style.boxShadow = '';
     selectedImg.style.filter = '';
     showImageControls(selectedImg);
   });
@@ -1505,12 +1515,23 @@
     if (selectedImg) selectedImg.style.objectPosition = imgPos.value;
   });
   imgWidth.addEventListener('input', function(){
-    if (!selectedImg) return;
-    selectedImg.style.maxWidth = imgWidth.value ? imgWidth.value + 'px' : '';
+    var frame = getImgFrame();
+    if (!frame) return;
+    var val = imgWidth.value ? imgWidth.value + 'px' : '';
+    frame.style.maxWidth = val;
+    // Also clear any existing maxWidth on the img if user manually had set one
+    if (selectedImg && selectedImg !== frame) selectedImg.style.maxWidth = '';
   });
   imgRadius.addEventListener('input', function(){
-    if (!selectedImg) return;
-    selectedImg.style.borderRadius = imgRadius.value ? imgRadius.value + 'px' : '';
+    var frame = getImgFrame();
+    if (!frame) return;
+    var val = imgRadius.value ? imgRadius.value + 'px' : '';
+    frame.style.borderRadius = val;
+    // Ensure wrapper clips so radius is visible
+    if (val && getComputedStyle(frame).overflow !== 'hidden') {
+      frame.style.overflow = 'hidden';
+    }
+    if (selectedImg && selectedImg !== frame) selectedImg.style.borderRadius = val;
   });
   panel.querySelector('[data-img-delete]').addEventListener('click', function(){
     if (!selectedImg) return;
