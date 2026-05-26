@@ -2057,6 +2057,17 @@
   // 1920px ÷ 13.333 in ≈ 144 px per inch (LAYOUT_WIDE 16:9)
   function pxToIn(px){ return px / 144; }
   function pxToPt(px){ return px * 0.75; }
+  // Clamp a rectangle to slide bounds; return null if it would have non-positive size
+  function clampRect(x, y, w, h){
+    if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) return null;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 13.333) w = 13.333 - x;
+    if (y + h > 7.5) h = 7.5 - y;
+    if (w <= 0.05 || h <= 0.05) return null;
+    if (x >= 13.333 || y >= 7.5) return null;
+    return { x: x, y: y, w: w, h: h };
+  }
   function cssToHex(color, fallback){
     if (!color) return fallback || null;
     color = String(color).trim();
@@ -2100,8 +2111,11 @@
     if (!col) return null;
     var opMatch = String(cssColor).match(/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/);
     var opacity = opMatch ? parseFloat(opMatch[1]) : 1;
-    var transparency = Math.round((1 - opacity) * 100);
-    return transparency > 0 ? { color: col, transparency: transparency } : { color: col };
+    if (isNaN(opacity)) opacity = 1;
+    // Skip nearly-transparent fills - they wouldn't be visible in PowerPoint anyway,
+    // and pptxgenjs transparency support is unreliable across viewers.
+    if (opacity < 0.18) return null;
+    return { color: col };
   }
   function firstColorFromGradient(bgImage){
     if (!bgImage) return null;
@@ -2135,14 +2149,16 @@
   function addCardShape(ps, el, slideRect){
     var rect = el.getBoundingClientRect();
     if (rect.width < 5 || rect.height < 5) return;
-    var x = pxToIn(rect.left - slideRect.left);
-    var y = pxToIn(rect.top - slideRect.top);
-    var w = pxToIn(rect.width);
-    var h = pxToIn(rect.height);
-    if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+    var clamped = clampRect(
+      pxToIn(rect.left - slideRect.left),
+      pxToIn(rect.top - slideRect.top),
+      pxToIn(rect.width),
+      pxToIn(rect.height)
+    );
+    if (!clamped) return;
 
     var style = getComputedStyle(el);
-    var opts = { x: Math.max(0, x), y: Math.max(0, y), w: w, h: h };
+    var opts = { x: clamped.x, y: clamped.y, w: clamped.w, h: clamped.h };
 
     // Fill — from solid background-color, or first color of a gradient
     var bgColor = style.backgroundColor;
@@ -2164,18 +2180,17 @@
       if (bc) opts.line = { color: bc, width: Math.max(0.5, bw) };
     }
 
-    // Shadow
-    var sh = parseBoxShadow(style.boxShadow);
-    if (sh) opts.shadow = sh;
+    // Shadows are intentionally omitted - pptxgenjs's shape shadow support is
+    // unreliable and can produce malformed pptx that PowerPoint refuses to open.
 
     if (!opts.fill && !opts.line) return; // nothing to draw
 
-    // Border radius — switch to rounded rect
+    // Border radius — switch to rounded rect (rectRadius is a 0-0.5 fraction of smaller dimension)
     var br = parseFloat(style.borderTopLeftRadius) || 0;
     var shape = 'rect';
     if (br > 0) {
       shape = 'roundRect';
-      opts.rectRadius = Math.min((br / Math.min(rect.width, rect.height)) * 0.5, 0.5);
+      opts.rectRadius = Math.min(br / Math.min(rect.width, rect.height), 0.5);
     }
 
     try { ps.addShape(shape, opts); } catch(e){}
@@ -2233,8 +2248,7 @@
         bold: fontWeight >= 600,
         italic: style.fontStyle === 'italic',
         fontFace: getFontName(style.fontFamily),
-        breakLine: true,
-        paraSpaceAfter: 6
+        breakLine: true
       }
     };
   }
@@ -2289,19 +2303,17 @@
   function addRichTextFrame(ps, runs, bounds, slideRect, padInches){
     if (!runs.length || !bounds) return;
     var pad = padInches || 0;
-    var x = pxToIn(bounds.left - slideRect.left) + pad;
-    var y = pxToIn(bounds.top - slideRect.top) + pad;
-    var w = pxToIn(bounds.right - bounds.left) - 2 * pad + 0.2;
-    var h = pxToIn(bounds.bottom - bounds.top) - 2 * pad + 0.6;
-    if (w <= 0.3 || h <= 0.2) return;
-    if (x > 13.333 || y > 7.5) return;
-    w = Math.min(w, 13.333 - x);
-    h = Math.min(h, 7.5 - y);
+    var c = clampRect(
+      pxToIn(bounds.left - slideRect.left) + pad,
+      pxToIn(bounds.top - slideRect.top) + pad,
+      pxToIn(bounds.right - bounds.left) - 2 * pad + 0.2,
+      pxToIn(bounds.bottom - bounds.top) - 2 * pad + 0.6
+    );
+    if (!c) return;
     try {
       ps.addText(runs, {
-        x: Math.max(0, x), y: Math.max(0, y), w: w, h: h,
-        valign: 'top', wrap: true, isTextBox: true, margin: 0,
-        paraSpaceAfter: 6
+        x: c.x, y: c.y, w: c.w, h: c.h,
+        valign: 'top', wrap: true, isTextBox: true, margin: 0
       });
     } catch(e){}
   }
@@ -2312,11 +2324,13 @@
     var rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
     var style = getComputedStyle(el);
-    var x = pxToIn(rect.left - slideRect.left);
-    var y = pxToIn(rect.top - slideRect.top);
-    var w = pxToIn(rect.width);
-    var h = pxToIn(rect.height);
-    if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+    var c = clampRect(
+      pxToIn(rect.left - slideRect.left),
+      pxToIn(rect.top - slideRect.top),
+      pxToIn(rect.width) + 0.1,
+      pxToIn(rect.height) + 0.1
+    );
+    if (!c) return;
 
     var fill = colorToFill(style.backgroundColor);
     if (!fill || !fill.color) {
@@ -2326,7 +2340,7 @@
     if (!fill) fill = { color: 'F323A1' };
 
     var opts = {
-      x: x, y: y, w: w + 0.1, h: h + 0.1,
+      x: c.x, y: c.y, w: c.w, h: c.h,
       fontSize: run.options.fontSize,
       color: run.options.color,
       fontFace: run.options.fontFace,
@@ -2336,8 +2350,6 @@
       isTextBox: true,
       margin: 0
     };
-    var sh = parseBoxShadow(style.boxShadow);
-    if (sh) opts.shadow = sh;
     try { ps.addText(run.text, opts); } catch(e){}
   }
 
@@ -2350,25 +2362,25 @@
       .filter(function(el){ return !el.closest('.ed-panel, .controls'); });
     cards.forEach(function(el){ addCardShape(ps, el, slideRect); });
 
-    // 2. Cover badge halo
-    var badge = root.querySelector ? root.querySelector('.cover-badge') : null;
-    if (badge) addBadgeHalo(ps, badge, slideRect);
-    if (root.matches && root.matches('.cover-badge')) addBadgeHalo(ps, root, slideRect);
+    // Note: badge halo intentionally not added as a shape — pptxgenjs ellipse with
+    // transparent fill across negative coordinates was causing file corruption.
 
     // 3. Images as editable picture objects
     root.querySelectorAll('img').forEach(function(img){
       if (img.closest('.ed-panel, .controls')) return;
       var rect = img.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
-      var x = pxToIn(rect.left - slideRect.left);
-      var y = pxToIn(rect.top - slideRect.top);
-      var w = pxToIn(rect.width);
-      var h = pxToIn(rect.height);
-      if (x + w < 0.05 || y + h < 0.05 || x > 13.333 || y > 7.5) return;
+      var c = clampRect(
+        pxToIn(rect.left - slideRect.left),
+        pxToIn(rect.top - slideRect.top),
+        pxToIn(rect.width),
+        pxToIn(rect.height)
+      );
+      if (!c) return;
       var data = imgToDataUrl(img);
       if (!data) return;
       try {
-        ps.addImage({ data: data, x: Math.max(0, x), y: Math.max(0, y), w: w, h: h });
+        ps.addImage({ data: data, x: c.x, y: c.y, w: c.w, h: c.h });
       } catch(e){}
     });
 
@@ -2381,13 +2393,16 @@
       var rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       var style = getComputedStyle(el);
-      var x = pxToIn(rect.left - slideRect.left);
-      var y = pxToIn(rect.top - slideRect.top);
-      var w = pxToIn(rect.width) + 0.2;
-      var h = pxToIn(rect.height) + 0.2;
+      var c = clampRect(
+        pxToIn(rect.left - slideRect.left),
+        pxToIn(rect.top - slideRect.top),
+        pxToIn(rect.width) + 0.2,
+        pxToIn(rect.height) + 0.2
+      );
+      if (!c) return;
       try {
         ps.addText(run.text, {
-          x: x, y: y, w: Math.min(13.333 - x, w), h: Math.min(7.5 - y, h),
+          x: c.x, y: c.y, w: c.w, h: c.h,
           fontSize: run.options.fontSize,
           color: run.options.color,
           fontFace: run.options.fontFace,
