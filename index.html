@@ -2362,6 +2362,10 @@
   var SPECIAL_TEXT_SEL = 'a.cta-btn, .result-pill';
 
   function buildRun(el){
+    // Skip editor-injected elements (drag handles, delete handles, etc.) — they
+    // can be matched by selectors like ".meta > span" because they live inside
+    // contenteditable parents, and their visible glyph (⤧, ×) must not be exported.
+    if (el.hasAttribute && el.hasAttribute('data-editor')) return null;
     var clone = el.cloneNode(true);
     clone.querySelectorAll('[data-editor="1"]').forEach(function(n){ n.remove(); });
     var text = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
@@ -2568,6 +2572,7 @@
         if (captured.has(el)) return;
         if (el.closest('.ed-panel, .controls')) return;
         if (el.closest('.ed-placed')) return;
+        if (el.hasAttribute && el.hasAttribute('data-editor')) return; // skip drag/delete handles
         if (el.matches && el.matches(SPECIAL_TEXT_SEL)) return;
         if (extraSkipFn && extraSkipFn(el)) return;
         // Skip if a parent text element exists inside the same container
