@@ -2143,9 +2143,17 @@
     return fallback || null;
   }
   function getFontName(fontFamily){
-    if (!fontFamily) return 'Inter';
+    if (!fontFamily) return 'Calibri';
     var first = fontFamily.split(',')[0].trim().replace(/^["']|["']$/g, '');
-    return first || 'Inter';
+    // Map web fonts to PowerPoint-native fonts so the rendering is predictable
+    // across machines. Without this, "Instrument Serif" italic falls back to a
+    // generic serif which can render Roman numerals (I/II/III) as slash glyphs.
+    var FALLBACK = {
+      'Inter': 'Calibri',
+      'Instrument Serif': 'Georgia',
+      'JetBrains Mono': 'Consolas'
+    };
+    return FALLBACK[first] || first || 'Calibri';
   }
   function imgToDataUrl(img){
     if (img.src && img.src.indexOf('data:') === 0) return img.src;
@@ -2438,17 +2446,24 @@
   function addRichTextFrame(ps, runs, bounds, slideRect, padInches){
     if (!runs.length || !bounds) return;
     var pad = padInches || 0;
+    // Give the text frame extra width + height beyond the measured CSS bounds.
+    // PowerPoint substitutes Inter → Calibri (wider), so text wraps to more lines
+    // than the browser planned. Without the extra room, the wrapped text spills
+    // visually onto whatever sits below (cards, CTA buttons). The shrink-fit
+    // option below also tells PowerPoint to scale the type down if it still
+    // can't fit — keeps the layout tidy even on systems missing Inter.
     var c = clampRect(
       pxToIn(bounds.left - slideRect.left) + pad,
       pxToIn(bounds.top - slideRect.top) + pad,
-      pxToIn(bounds.right - bounds.left) - 2 * pad + 0.2,
-      pxToIn(bounds.bottom - bounds.top) - 2 * pad + 0.6
+      pxToIn(bounds.right - bounds.left) - 2 * pad + 0.5,
+      pxToIn(bounds.bottom - bounds.top) - 2 * pad + 0.9
     );
     if (!c) return;
     try {
       ps.addText(runs, {
         x: c.x, y: c.y, w: c.w, h: c.h,
-        valign: 'top', wrap: true, isTextBox: true, margin: 0
+        valign: 'top', wrap: true, isTextBox: true, margin: 0,
+        fit: 'shrink', autoFit: true
       });
     } catch(e){}
   }
@@ -2478,7 +2493,8 @@
       bold: true,
       align: 'center', valign: 'middle',
       isTextBox: true,
-      margin: 0
+      margin: 0,
+      fit: 'shrink', autoFit: true
     };
     try { ps.addText(run.text, opts); } catch(e){}
   }
@@ -2504,17 +2520,34 @@
       addGradientFillImage(ps, el, slideRect);
     });
 
-    // 4. Images as editable picture objects
+    // 4. Images as editable picture objects.
+    // Preserve aspect ratio: if the displayed rect would overflow the slide
+    // (common for tall portrait photos like the team transformation pic on
+    // slide 11), shrink the image proportionally instead of letting clampRect
+    // squish it to fit. Without this the team photo can render distorted/oversized.
     root.querySelectorAll('img').forEach(function(img){
       if (img.closest('.ed-panel, .controls')) return;
       var rect = img.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
-      var c = clampRect(
-        pxToIn(rect.left - slideRect.left),
-        pxToIn(rect.top - slideRect.top),
-        pxToIn(rect.width),
-        pxToIn(rect.height)
-      );
+      var wIn = pxToIn(rect.width);
+      var hIn = pxToIn(rect.height);
+      var xIn = pxToIn(rect.left - slideRect.left);
+      var yIn = pxToIn(rect.top - slideRect.top);
+      // If the image extends below the slide, scale it down proportionally
+      // around its top-left anchor so it fits.
+      var maxH = 7.5 - Math.max(0, yIn);
+      if (maxH > 0.05 && hIn > maxH) {
+        var scale = maxH / hIn;
+        hIn = maxH;
+        wIn = wIn * scale;
+      }
+      var maxW = 13.333 - Math.max(0, xIn);
+      if (maxW > 0.05 && wIn > maxW) {
+        var scaleW = maxW / wIn;
+        wIn = maxW;
+        hIn = hIn * scaleW;
+      }
+      var c = clampRect(xIn, yIn, wIn, hIn);
       if (!c) return;
       var data = imgToDataUrl(img);
       if (!data) return;
@@ -2548,7 +2581,8 @@
           bold: run.options.bold, italic: run.options.italic,
           align: style.textAlign === 'center' ? 'center'
                : style.textAlign === 'right'  ? 'right' : 'left',
-          valign: 'top', wrap: true, margin: 0, isTextBox: true
+          valign: 'top', wrap: true, margin: 0, isTextBox: true,
+          fit: 'shrink', autoFit: true
         });
       } catch(e){}
       el.querySelectorAll('*').forEach(function(d){ captured.add(d); });
