@@ -2522,41 +2522,60 @@
       captured.add(el);
     });
 
-    // 6. One rich-text frame per card (so each card has tidy stacked text)
-    cards.forEach(function(card){
-      var runs = collectRunsIn(card, captured, null);
-      if (!runs.length) return;
-      var bounds = textUnionRect(card, null);
-      if (!bounds) bounds = card.getBoundingClientRect();
-      addRichTextFrame(ps, runs, bounds, slideRect, 0.05);
-    });
-
-    // 7. One rich-text frame for everything else — positioned at the *union* of
-    //    remaining text rects (avoids overlapping the badge image on the cover slide).
-    var mainContainer = (root.querySelector && root.querySelector('.narrow, .container, .wide')) || root;
-    var mainRuns = collectRunsIn(mainContainer, captured, cards);
-    if (mainRuns.length) {
-      // Compute union of just the remaining (non-captured) text rects
-      var nonCapBounds = null;
-      mainContainer.querySelectorAll(TEXT_SEL).forEach(function(el){
+    // Helper: collect runs + their bounding union in a single pass, so the two
+    // can't get out of sync (the previous two-walk version skipped already-
+    // captured elements in the bounds walk and produced empty text frames).
+    function collectRunsAndBounds(container, ancestorStop, extraSkipFn){
+      var runs = [], bounds = null;
+      container.querySelectorAll(TEXT_SEL).forEach(function(el){
         if (captured.has(el)) return;
         if (el.closest('.ed-panel, .controls')) return;
         if (el.closest('.ed-placed')) return;
         if (el.matches && el.matches(SPECIAL_TEXT_SEL)) return;
-        var skipped = false;
-        for (var c2 = 0; c2 < cards.length; c2++) { if (cards[c2].contains(el)) { skipped = true; break; } }
-        if (skipped) return;
+        if (extraSkipFn && extraSkipFn(el)) return;
+        // Skip if a parent text element exists inside the same container
+        var anc = el.parentElement;
+        while (anc && anc !== ancestorStop) {
+          if (anc.matches && anc.matches(TEXT_SEL) && !captured.has(anc)) return;
+          anc = anc.parentElement;
+        }
+        var run = buildRun(el);
+        if (!run) return;
+        runs.push(run);
+        captured.add(el);
         var r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return;
-        if (!nonCapBounds) nonCapBounds = { left:r.left, top:r.top, right:r.right, bottom:r.bottom };
+        if (!bounds) bounds = { left:r.left, top:r.top, right:r.right, bottom:r.bottom };
         else {
-          nonCapBounds.left = Math.min(nonCapBounds.left, r.left);
-          nonCapBounds.top = Math.min(nonCapBounds.top, r.top);
-          nonCapBounds.right = Math.max(nonCapBounds.right, r.right);
-          nonCapBounds.bottom = Math.max(nonCapBounds.bottom, r.bottom);
+          bounds.left = Math.min(bounds.left, r.left);
+          bounds.top = Math.min(bounds.top, r.top);
+          bounds.right = Math.max(bounds.right, r.right);
+          bounds.bottom = Math.max(bounds.bottom, r.bottom);
         }
       });
-      if (nonCapBounds) addRichTextFrame(ps, mainRuns, nonCapBounds, slideRect, 0);
+      return { runs: runs, bounds: bounds };
+    }
+
+    // 6. One rich-text frame per card (so each card has tidy stacked text)
+    cards.forEach(function(card){
+      var rb = collectRunsAndBounds(card, card, null);
+      if (!rb.runs.length) return;
+      var b = rb.bounds || card.getBoundingClientRect();
+      addRichTextFrame(ps, rb.runs, b, slideRect, 0.05);
+    });
+
+    // 7. One rich-text frame for the rest of the slide's text (eyebrow, heading,
+    //    body paragraphs, metadata) — positioned at the union of those rects so
+    //    it doesn't overlap images (e.g. the cover badge on the cover slide).
+    var mainContainer = (root.querySelector && root.querySelector('.narrow, .container, .wide')) || root;
+    var rb2 = collectRunsAndBounds(mainContainer, mainContainer, function(el){
+      for (var c2 = 0; c2 < cards.length; c2++) {
+        if (cards[c2].contains(el)) return true;
+      }
+      return false;
+    });
+    if (rb2.runs.length && rb2.bounds) {
+      addRichTextFrame(ps, rb2.runs, rb2.bounds, slideRect, 0);
     }
   }
 
