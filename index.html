@@ -938,7 +938,10 @@
     '.ed-placed{position:absolute;margin:0!important;z-index:5}',
     '.ed-placed.ed-placed-img{display:inline-block;overflow:hidden}',
     '.ed-drag-handle{position:absolute;top:4px;left:4px;width:26px;height:26px;background:linear-gradient(135deg,#F323A1,#FF5FC4);color:#fff;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:move;font-size:14px;font-weight:700;line-height:1;opacity:0;transition:opacity .15s ease;user-select:none;-webkit-user-select:none;box-shadow:0 4px 12px rgba(0,0,0,.5);z-index:10;pointer-events:auto}',
+    '.ed-del-handle{position:absolute;top:4px;right:4px;width:26px;height:26px;background:linear-gradient(135deg,#EF4444,#F87171);color:#fff;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;font-weight:700;line-height:1;opacity:0;transition:opacity .15s ease,transform .15s ease;user-select:none;-webkit-user-select:none;box-shadow:0 4px 12px rgba(0,0,0,.5);z-index:11;pointer-events:auto}',
+    '.ed-del-handle:hover{transform:scale(1.08)}',
     '[data-ed-movable]:hover>.ed-drag-handle,.ed-placed:hover>.ed-drag-handle,.ed-placed.ed-dragging>.ed-drag-handle,[data-ed-movable].ed-dragging>.ed-drag-handle{opacity:1}',
+    '[data-ed-movable]:hover>.ed-del-handle,.ed-placed:hover>.ed-del-handle{opacity:1}',
     '.ed-placed.ed-dragging,[data-ed-movable].ed-dragging{outline:2px dashed #F323A1;outline-offset:4px}',
     /* Save toast */
     '.ed-toast{position:fixed;bottom:24px;left:50%;transform:translate(-50%,20px);z-index:10001;background:#0E0E0E;border:1px solid #F323A1;color:#fff;padding:12px 22px;border-radius:999px;font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s ease,transform .25s ease}',
@@ -1751,18 +1754,47 @@
 
   /* ---------- Make existing images movable ---------- */
   function getMovableTarget(img){
-    return img.closest('.ed-placed,.cover-badge,.case-photo,.photo-block,.who-team-photo,.case .ph') || img;
+    return img.closest('.ed-placed,.cover-badge,.case-photo,.photo-block,.who-team-photo,.case .ph,.logo') || img;
+  }
+  function createDeleteHandle(img){
+    var h = document.createElement('span');
+    h.className = 'ed-del-handle';
+    h.setAttribute('contenteditable', 'false');
+    h.setAttribute('data-editor', '1');
+    h.title = 'Remove image';
+    h.textContent = '×';
+    // Swallow mousedown so it doesn't start a drag
+    h.addEventListener('mousedown', function(e){ e.preventDefault(); e.stopPropagation(); });
+    h.addEventListener('touchstart', function(e){ e.stopPropagation(); }, { passive: true });
+    h.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      if (!confirm('Remove this image?')) return;
+      var host = getMovableTarget(img);
+      (host || img).remove();
+      // If this was the selected image, clear the panel
+      if (typeof selectedImg !== 'undefined' && selectedImg === img) {
+        selectedImg = null;
+        if (typeof imgEmpty !== 'undefined') imgEmpty.style.display = 'block';
+        if (typeof imgCtrls !== 'undefined') imgCtrls.style.display = 'none';
+      }
+    });
+    return h;
   }
   function wireMovable(img){
-    if (img.closest('.brandbar')) return; // skip fixed-header logo
     var target = getMovableTarget(img);
     if (!target || target.closest('.ed-panel')) return;
-    if (target.querySelector(':scope > .ed-drag-handle')) return;
+    if (target.querySelector(':scope > .ed-del-handle')) return; // already wired
     if (getComputedStyle(target).position === 'static') {
       target.style.position = 'relative';
     }
     target.setAttribute('data-ed-movable', '1');
-    target.appendChild(createDragHandle(target));
+    // Drag handle for everything except the fixed-header brandbar logo
+    if (!img.closest('.brandbar') && !target.querySelector(':scope > .ed-drag-handle')) {
+      target.appendChild(createDragHandle(target));
+    }
+    // Delete handle on every image, including the brandbar logo
+    target.appendChild(createDeleteHandle(img));
   }
   document.querySelectorAll('img').forEach(wireMovable);
 
@@ -1794,6 +1826,7 @@
           img.alt = '';
           img.style.cssText = 'width:100%;height:auto;display:block;border-radius:8px';
           wrap.appendChild(img);
+          wrap.appendChild(createDeleteHandle(img));
           slide.appendChild(wrap);
           wireImage(img);
           selectedImg = img;
@@ -1879,6 +1912,10 @@
     } else {
       var img = el.querySelector('img');
       if (img && !img.dataset.edWired) wireImage(img);
+      // Add delete handle if missing
+      if (img && !el.querySelector(':scope > .ed-del-handle')) {
+        el.appendChild(createDeleteHandle(img));
+      }
     }
   });
 
