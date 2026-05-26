@@ -2145,11 +2145,13 @@
   function getFontName(fontFamily){
     if (!fontFamily) return 'Calibri';
     var first = fontFamily.split(',')[0].trim().replace(/^["']|["']$/g, '');
-    // Map web fonts to PowerPoint-native fonts so the rendering is predictable
-    // across machines. Without this, "Instrument Serif" italic falls back to a
-    // generic serif which can render Roman numerals (I/II/III) as slash glyphs.
+    // Keep the actual web font name (Inter is free on Google Fonts, so any
+    // recipient who cares about exact rendering can install it). Mapping
+    // Inter → Calibri changes the metrics enough to reflow every text box,
+    // which is what makes lines run into each other in PowerPoint.
+    // Only remap fonts whose default fallback misrenders glyphs (Instrument
+    // Serif italic falls back to a serif that draws Roman numerals as slashes).
     var FALLBACK = {
-      'Inter': 'Calibri',
       'Instrument Serif': 'Georgia',
       'JetBrains Mono': 'Consolas'
     };
@@ -2550,15 +2552,17 @@
       var rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       var style = getComputedStyle(el);
-      // PowerPoint substitutes Inter → Calibri (wider) so text re-wraps and
-      // needs a little more horizontal room. Don't pad height — that would
-      // push the box into the next element below it. shrink-fit + autoFit
-      // handle anything still too tight.
+      // Use the element's measured rect verbatim — no padding. Earlier versions
+      // added a horizontal buffer to absorb the wider Calibri fallback, but
+      // adjacent elements (e.g. the side-by-side "Host / Duration / For" spans
+      // on the cover slide) ended up with text boxes that bled into each
+      // other. shrink-fit + autoFit will scale the font down if the real font
+      // is missing and Calibri runs long.
       var c = clampRect(
         pxToIn(rect.left - slideRect.left),
         pxToIn(rect.top - slideRect.top),
-        pxToIn(rect.width) + 0.4,
-        pxToIn(rect.height) + 0.05
+        pxToIn(rect.width),
+        pxToIn(rect.height)
       );
       if (!c) return;
       try {
