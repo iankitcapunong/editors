@@ -949,7 +949,12 @@
     'body.ed-capturing *,body.ed-capturing *::before,body.ed-capturing *::after{animation:none!important;transition:none!important;caret-color:transparent!important}',
     'body.ed-capturing [contenteditable]{outline:none!important;background:transparent!important;cursor:default!important}',
     'body.ed-capturing img{outline:none!important;cursor:default!important}',
-    'body.ed-capturing .ed-panel,body.ed-capturing .ed-toggle,body.ed-capturing .ed-toast,body.ed-capturing .ed-place-hint,body.ed-capturing .controls{display:none!important}'
+    'body.ed-capturing .ed-panel,body.ed-capturing .ed-toggle,body.ed-capturing .ed-toast,body.ed-capturing .ed-place-hint,body.ed-capturing .controls{display:none!important}',
+    /* Design-layer render: keep all backgrounds / borders / shadows / gradients / halos visible,
+       but hide content text + images so the result can be used as the .pptx slide background.
+       Editable text and image overlays are added on top so the deck remains fully editable. */
+    'body.ed-bg-render h1,body.ed-bg-render h2,body.ed-bg-render h3,body.ed-bg-render h4,body.ed-bg-render p,body.ed-bg-render li,body.ed-bg-render .eyebrow,body.ed-bg-render .q,body.ed-bg-render .text,body.ed-bg-render .session-tag,body.ed-bg-render .result-pill,body.ed-bg-render .num,body.ed-bg-render .myth-tag,body.ed-bg-render .photo-caption,body.ed-bg-render .meta,body.ed-bg-render a.cta-btn{color:transparent!important;text-shadow:none!important}',
+    'body.ed-bg-render img{visibility:hidden!important}'
   ].join('\n');
   document.head.appendChild(css);
 
@@ -2036,9 +2041,24 @@
       document.head.appendChild(s);
     });
   }
-  /* Structured PPTX export: walks each slide and emits text boxes and images
-     as positioned PowerPoint objects so the result is fully editable in
-     PowerPoint / Canva / Keynote — no screenshot images. */
+  /* Hybrid PPTX export:
+       1. Each slide's design (backgrounds, gradients, borders, shadows, badge halo) is
+          rendered to a JPEG with text+images hidden, and set as the slide background.
+       2. Editable text frames and image objects are laid on top, matching the website's
+          positions and styles.
+     Result: every color, gradient, and decoration from the website is preserved exactly,
+     while text and images stay editable in PowerPoint / Canva. */
+  function loadHtmlToImage(){
+    if (window.htmlToImage) return Promise.resolve(window.htmlToImage);
+    return new Promise(function(resolve, reject){
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js';
+      s.setAttribute('data-editor', '1');
+      s.onload = function(){ resolve(window.htmlToImage); };
+      s.onerror = function(){ reject(new Error('html-to-image failed to load')); };
+      document.head.appendChild(s);
+    });
+  }
   function preloadAllImages(){
     var imgs = document.querySelectorAll('img');
     var promises = [];
@@ -2332,13 +2352,9 @@
     );
     if (!c) return;
 
-    var fill = colorToFill(style.backgroundColor);
-    if (!fill || !fill.color) {
-      var first = firstColorFromGradient(style.backgroundImage);
-      if (first) fill = colorToFill(first);
-    }
-    if (!fill) fill = { color: 'F323A1' };
-
+    // Note: pink button/pill fills are already baked into the slide-background
+    // design layer — overlay text only, no fill (otherwise the .pptx would double-paint
+    // the button on top of itself).
     var opts = {
       x: c.x, y: c.y, w: c.w, h: c.h,
       fontSize: run.options.fontSize,
@@ -2346,7 +2362,6 @@
       fontFace: run.options.fontFace,
       bold: true,
       align: 'center', valign: 'middle',
-      fill: fill,
       isTextBox: true,
       margin: 0
     };
@@ -2356,16 +2371,13 @@
   function captureRootToSlide(ps, root, slideRect){
     var captured = new Set();
 
-    // 1. Decorative background shapes (cards) so they sit behind everything else
-    if (root.matches && root.matches(CARD_SEL)) addCardShape(ps, root, slideRect);
+    // Cards, halos, gradients, button fills are ALREADY rendered into the slide
+    // background image (the design layer). We only emit editable text + image
+    // overlays here so the deck stays fully editable.
     var cards = Array.prototype.slice.call(root.querySelectorAll(CARD_SEL))
       .filter(function(el){ return !el.closest('.ed-panel, .controls'); });
-    cards.forEach(function(el){ addCardShape(ps, el, slideRect); });
 
-    // Note: badge halo intentionally not added as a shape — pptxgenjs ellipse with
-    // transparent fill across negative coordinates was causing file corruption.
-
-    // 3. Images as editable picture objects
+    // 1. Images as editable picture objects (overlaid on top of the design background)
     root.querySelectorAll('img').forEach(function(img){
       if (img.closest('.ed-panel, .controls')) return;
       var rect = img.getBoundingClientRect();
@@ -2470,8 +2482,10 @@
     var origHtmlCss = document.documentElement.getAttribute('style') || '';
     var origScrollY = window.scrollY;
     try {
-      showToast('Loading PowerPoint library…');
-      var Pptx = await loadPptxGenJS();
+      showToast('Loading PowerPoint libraries…');
+      var libs = await Promise.all([loadPptxGenJS(), loadHtmlToImage()]);
+      var Pptx = libs[0];
+      var h2i = libs[1];
       var pres = new Pptx();
       pres.layout = 'LAYOUT_WIDE'; // 13.333 × 7.5 inches (16:9)
       pres.title = document.title || 'Slide Deck';
@@ -2498,18 +2512,48 @@
 
       var brandbar = document.querySelector('.brandbar');
 
+      function bgFilter(node){
+        if (!node || node.nodeType !== 1) return true;
+        try {
+          if (node.matches && node.matches('.ed-panel, .ed-toggle, .ed-toast, .ed-place-hint, .controls, .skip-link, [data-editor="1"]')) return false;
+          if (node.classList && node.classList.contains('ed-drag-handle')) return false;
+        } catch(e){}
+        return true;
+      }
+
       for (var i = 0; i < slides.length; i++) {
-        showToast('Building slide ' + (i + 1) + ' / ' + slides.length);
+        showToast('Rendering slide ' + (i + 1) + ' / ' + slides.length);
         slides.forEach(function(s){ s.classList.remove('active'); });
         slides[i].classList.add('active');
         slides[i].scrollTop = 0;
+
+        // 1. Render the DESIGN LAYER: text + images hidden, only colors/gradients/halos/cards/borders remain.
+        document.body.classList.add('ed-bg-render');
         await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
+        var bgImage = null;
+        try {
+          bgImage = await h2i.toJpeg(document.body, {
+            width: 1920,
+            height: 1080,
+            backgroundColor: '#000000',
+            quality: 0.9,
+            pixelRatio: 1,
+            cacheBust: false,
+            filter: bgFilter,
+            style: { width: '1920px', height: '1080px', margin: '0', padding: '0' }
+          });
+        } catch(e) { console.warn('design-layer render failed', e); }
+        document.body.classList.remove('ed-bg-render');
 
         var ps = pres.addSlide();
-        var slideStyle = getComputedStyle(slides[i]);
-        var bgColor = cssToHex(slideStyle.backgroundColor, '000000') || '000000';
-        ps.background = { color: bgColor };
+        if (bgImage) {
+          ps.background = { data: bgImage };
+        } else {
+          var bgColor = cssToHex(getComputedStyle(slides[i]).backgroundColor, '000000') || '000000';
+          ps.background = { color: bgColor };
+        }
 
+        // 2. Layer editable overlays (images and text) on top
         var slideRect = slides[i].getBoundingClientRect();
         if (brandbar) captureRootToSlide(ps, brandbar, slideRect);
         captureRootToSlide(ps, slides[i], slideRect);
@@ -2527,6 +2571,7 @@
       if (origActive) origActive.classList.add('active');
       else if (slides[0]) slides[0].classList.add('active');
       document.body.classList.remove('ed-capturing');
+      document.body.classList.remove('ed-bg-render');
       if (panelWasOpen) document.body.classList.add('ed-panel-open');
       document.body.setAttribute('style', origBodyCss);
       document.documentElement.setAttribute('style', origHtmlCss);
