@@ -2216,14 +2216,36 @@
     try { ps.addShape(shape, opts); } catch(e){}
   }
 
+  // Generate a small decorative PNG via canvas (radial or linear gradient).
+  // Used for gradients that pptx shape fills can't reproduce cleanly (badge halo, etc.).
+  function generateGradientPng(stops, w, h, type){
+    var canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    var ctx = canvas.getContext('2d');
+    var grad;
+    if (type === 'radial') {
+      grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.min(w, h) / 2);
+    } else {
+      grad = ctx.createLinearGradient(0, 0, w, h);
+    }
+    stops.forEach(function(stop){ grad.addColorStop(stop.pos, stop.color); });
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    return canvas.toDataURL('image/png');
+  }
+
+  function hexToRgbStr(hex){
+    var h = hex.replace('#', '');
+    var r = parseInt(h.substr(0,2), 16);
+    var g = parseInt(h.substr(2,2), 16);
+    var b = parseInt(h.substr(4,2), 16);
+    return r + ',' + g + ',' + b;
+  }
+
   function addBadgeHalo(ps, badge, slideRect){
     var rect = badge.getBoundingClientRect();
     if (rect.width < 5) return;
-    var x = pxToIn(rect.left - slideRect.left);
-    var y = pxToIn(rect.top - slideRect.top);
-    var w = pxToIn(rect.width);
-    var h = pxToIn(rect.height);
-    var ext = 0.12;
 
     // Pull the glow color from the --badge-glow CSS variable when set, else fall back to pink
     var glow = badge.style.getPropertyValue('--badge-glow') || '';
@@ -2237,14 +2259,66 @@
         return h2.length < 2 ? '0'+h2 : h2;
       }).join('').toUpperCase();
     }
+    var rgb = hexToRgbStr(col);
 
-    try {
-      ps.addShape('ellipse', {
-        x: x - w * ext, y: y - h * ext,
-        w: w * (1 + 2 * ext), h: h * (1 + 2 * ext),
-        fill: { color: col, transparency: 78 }
-      });
-    } catch(e){}
+    // Render the halo as a PNG with radial transparency — pptx ellipses with
+    // transparent fills are unreliable, but image objects with alpha render
+    // cleanly in both PowerPoint and Canva. The image stays draggable + editable.
+    var haloPng = generateGradientPng([
+      { pos: 0,    color: 'rgba(' + rgb + ',0.5)' },
+      { pos: 0.55, color: 'rgba(' + rgb + ',0.18)' },
+      { pos: 1,    color: 'rgba(' + rgb + ',0)' }
+    ], 512, 512, 'radial');
+
+    var ext = 0.15;
+    var c = clampRect(
+      pxToIn(rect.left - slideRect.left) - pxToIn(rect.width * ext),
+      pxToIn(rect.top - slideRect.top) - pxToIn(rect.height * ext),
+      pxToIn(rect.width * (1 + 2 * ext)),
+      pxToIn(rect.height * (1 + 2 * ext))
+    );
+    if (!c) return;
+
+    try { ps.addImage({ data: haloPng, x: c.x, y: c.y, w: c.w, h: c.h }); } catch(e){}
+  }
+
+  // Add a gradient/solid fill behind a button or pill as its own editable image
+  function addGradientFillImage(ps, el, slideRect){
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 5 || rect.height < 5) return null;
+    var c = clampRect(
+      pxToIn(rect.left - slideRect.left),
+      pxToIn(rect.top - slideRect.top),
+      pxToIn(rect.width),
+      pxToIn(rect.height)
+    );
+    if (!c) return null;
+
+    var style = getComputedStyle(el);
+    var bgImage = style.backgroundImage;
+    var stops = null;
+    if (bgImage && bgImage.indexOf('gradient') !== -1) {
+      // Extract two colors from the linear-gradient
+      var colorMatches = bgImage.match(/rgba?\([^)]+\)|#[0-9a-fA-F]{6}/g);
+      if (colorMatches && colorMatches.length >= 2) {
+        stops = [
+          { pos: 0, color: colorMatches[0] },
+          { pos: 1, color: colorMatches[1] }
+        ];
+      }
+    }
+    if (!stops) {
+      var bgCol = cssToHex(style.backgroundColor, 'F323A1') || 'F323A1';
+      stops = [
+        { pos: 0, color: '#' + bgCol },
+        { pos: 1, color: '#' + bgCol }
+      ];
+    }
+    var pxW = Math.max(20, Math.round(rect.width));
+    var pxH = Math.max(20, Math.round(rect.height));
+    var png = generateGradientPng(stops, pxW, pxH, 'linear');
+    try { ps.addImage({ data: png, x: c.x, y: c.y, w: c.w, h: c.h }); } catch(e){}
+    return c;
   }
 
   // Buttons / pills keep their own text-box-with-fill rendering
@@ -2352,9 +2426,9 @@
     );
     if (!c) return;
 
-    // Note: pink button/pill fills are already baked into the slide-background
-    // design layer — overlay text only, no fill (otherwise the .pptx would double-paint
-    // the button on top of itself).
+    // The pink fill behind the button is added separately as a gradient PNG via
+    // addGradientFillImage() (called from captureRootToSlide). This text box sits
+    // on top with a transparent background so the gradient shows through.
     var opts = {
       x: c.x, y: c.y, w: c.w, h: c.h,
       fontSize: run.options.fontSize,
@@ -2371,13 +2445,25 @@
   function captureRootToSlide(ps, root, slideRect){
     var captured = new Set();
 
-    // Cards, halos, gradients, button fills are ALREADY rendered into the slide
-    // background image (the design layer). We only emit editable text + image
-    // overlays here so the deck stays fully editable.
+    // 1. Card-style decorative shapes (real editable pptx shapes - draggable)
+    if (root.matches && root.matches(CARD_SEL)) addCardShape(ps, root, slideRect);
     var cards = Array.prototype.slice.call(root.querySelectorAll(CARD_SEL))
       .filter(function(el){ return !el.closest('.ed-panel, .controls'); });
+    cards.forEach(function(el){ addCardShape(ps, el, slideRect); });
 
-    // 1. Images as editable picture objects (overlaid on top of the design background)
+    // 2. Cover badge halo (gradient PNG image — editable + draggable in PowerPoint/Canva)
+    var badge = root.querySelector ? root.querySelector('.cover-badge') : null;
+    if (badge) addBadgeHalo(ps, badge, slideRect);
+    if (root.matches && root.matches('.cover-badge')) addBadgeHalo(ps, root, slideRect);
+
+    // 3. CTA buttons + result pills get their gradient as a PNG image behind the text
+    root.querySelectorAll('a.cta-btn, .result-pill').forEach(function(el){
+      if (el.closest('.ed-panel, .controls')) return;
+      if (el.closest('.ed-placed')) return;
+      addGradientFillImage(ps, el, slideRect);
+    });
+
+    // 4. Images as editable picture objects
     root.querySelectorAll('img').forEach(function(img){
       if (img.closest('.ed-panel, .controls')) return;
       var rect = img.getBoundingClientRect();
@@ -2482,10 +2568,8 @@
     var origHtmlCss = document.documentElement.getAttribute('style') || '';
     var origScrollY = window.scrollY;
     try {
-      showToast('Loading PowerPoint libraries…');
-      var libs = await Promise.all([loadPptxGenJS(), loadHtmlToImage()]);
-      var Pptx = libs[0];
-      var h2i = libs[1];
+      showToast('Loading PowerPoint library…');
+      var Pptx = await loadPptxGenJS();
       var pres = new Pptx();
       pres.layout = 'LAYOUT_WIDE'; // 13.333 × 7.5 inches (16:9)
       pres.title = document.title || 'Slide Deck';
@@ -2512,48 +2596,17 @@
 
       var brandbar = document.querySelector('.brandbar');
 
-      function bgFilter(node){
-        if (!node || node.nodeType !== 1) return true;
-        try {
-          if (node.matches && node.matches('.ed-panel, .ed-toggle, .ed-toast, .ed-place-hint, .controls, .skip-link, [data-editor="1"]')) return false;
-          if (node.classList && node.classList.contains('ed-drag-handle')) return false;
-        } catch(e){}
-        return true;
-      }
-
       for (var i = 0; i < slides.length; i++) {
-        showToast('Rendering slide ' + (i + 1) + ' / ' + slides.length);
+        showToast('Building slide ' + (i + 1) + ' / ' + slides.length);
         slides.forEach(function(s){ s.classList.remove('active'); });
         slides[i].classList.add('active');
         slides[i].scrollTop = 0;
-
-        // 1. Render the DESIGN LAYER: text + images hidden, only colors/gradients/halos/cards/borders remain.
-        document.body.classList.add('ed-bg-render');
         await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
-        var bgImage = null;
-        try {
-          bgImage = await h2i.toJpeg(document.body, {
-            width: 1920,
-            height: 1080,
-            backgroundColor: '#000000',
-            quality: 0.9,
-            pixelRatio: 1,
-            cacheBust: false,
-            filter: bgFilter,
-            style: { width: '1920px', height: '1080px', margin: '0', padding: '0' }
-          });
-        } catch(e) { console.warn('design-layer render failed', e); }
-        document.body.classList.remove('ed-bg-render');
 
         var ps = pres.addSlide();
-        if (bgImage) {
-          ps.background = { data: bgImage };
-        } else {
-          var bgColor = cssToHex(getComputedStyle(slides[i]).backgroundColor, '000000') || '000000';
-          ps.background = { color: bgColor };
-        }
+        var bgColor = cssToHex(getComputedStyle(slides[i]).backgroundColor, '000000') || '000000';
+        ps.background = { color: bgColor };
 
-        // 2. Layer editable overlays (images and text) on top
         var slideRect = slides[i].getBoundingClientRect();
         if (brandbar) captureRootToSlide(ps, brandbar, slideRect);
         captureRootToSlide(ps, slides[i], slideRect);
