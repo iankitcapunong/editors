@@ -953,6 +953,15 @@
     'body.ed-capturing [contenteditable]{outline:none!important;background:transparent!important;cursor:default!important}',
     'body.ed-capturing img{outline:none!important;cursor:default!important}',
     'body.ed-capturing .ed-panel,body.ed-capturing .ed-toggle,body.ed-capturing .ed-toast,body.ed-capturing .ed-place-hint,body.ed-capturing .controls{display:none!important}',
+    /* Pin the deck/slide/brandbar to a true 1920×1080 (16:9) box while exporting.
+       The slide is normally position:fixed/absolute inset:0, so it sizes to the
+       BROWSER WINDOW — not to anything JS sets on <body>. By forcing an explicit
+       16:9 geometry here, getBoundingClientRect() returns a real 1920×1080 rect on
+       any screen, so the px→inch scale is exact and proportional regardless of
+       window size. (overflow:hidden keeps content from scrolling mid-capture.) */
+    'body.ed-capturing .deck{position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;width:1920px!important;height:1080px!important;margin:0!important;overflow:hidden!important}',
+    'body.ed-capturing .slide{position:absolute!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;inset:auto!important;width:1920px!important;height:1080px!important;margin:0!important;overflow:hidden!important}',
+    'body.ed-capturing .brandbar{position:fixed!important;left:0!important;top:0!important;right:auto!important;width:1920px!important}',
     /* Design-layer render: keep all backgrounds / borders / shadows / gradients / halos visible,
        but hide content text + images so the result can be used as the .pptx slide background.
        Editable text and image overlays are added on top so the deck remains fully editable. */
@@ -2111,9 +2120,28 @@
     return Promise.all(promises);
   }
 
-  // 1920px ÷ 13.333 in ≈ 144 px per inch (LAYOUT_WIDE 16:9)
-  function pxToIn(px){ return px / 144; }
-  function pxToPt(px){ return px * 0.75; }
+  // ---- Coordinate + typography scaling -------------------------------------
+  // LAYOUT_WIDE is 13.333 × 7.5 in (16:9). We convert CSS pixels → inches with a
+  // per-slide pixels-per-inch factor derived from the slide's ACTUAL rendered
+  // width, not a hardcoded constant. This is the core fix: the old code assumed
+  // the slide was always 1920px wide and divided by 144, so on any other window
+  // size every element got squished into the top-left fraction of the slide.
+  //
+  // Because capture pins the slide to a true 16:9 box (see ed-capturing CSS),
+  // one uniform factor is correct for x, y, width AND height. Fonts use the
+  // SAME factor (px ÷ ppi × 72 pt/in) so a text box and its text are scaled
+  // identically — text that fits in the browser fits in the box, which is what
+  // stops lines from overlapping. (The previous px×0.75 assumed 96 ppi while
+  // positions used 144 ppi, rendering every glyph ~1.5× too large for its box.)
+  var SLIDE_W_IN = 13.333, SLIDE_H_IN = 7.5;
+  var PPI = 144; // recomputed per slide from slideRect.width in exportPptx()
+  function setSlideScale(slideRect){
+    var ppi = slideRect.width / SLIDE_W_IN;
+    PPI = (isFinite(ppi) && ppi > 0) ? ppi : 144;
+    return PPI;
+  }
+  function pxToIn(px){ return px / PPI; }
+  function pxToPt(px){ return px / PPI * 72; }
   // Clamp a rectangle to slide bounds; return null if it would have non-positive size
   function clampRect(x, y, w, h){
     if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) return null;
@@ -2630,6 +2658,7 @@
         ps.background = { color: bgColor };
 
         var slideRect = slides[i].getBoundingClientRect();
+        setSlideScale(slideRect); // px→inch factor from the slide's true 16:9 width
         if (brandbar) captureRootToSlide(ps, brandbar, slideRect);
         captureRootToSlide(ps, slides[i], slideRect);
       }
